@@ -8,28 +8,33 @@ import subprocess
 import threading
 import time
 
-# ✅ Quick fix for missing utils import
-current_dir = os.path.dirname(os.path.abspath(__file__))
-utils_path = os.path.join(current_dir, "utils")
-if utils_path not in sys.path:
-    sys.path.append(utils_path)
-
-try:
-    from utils.validators import validate_stems
-except ModuleNotFoundError:
-    # fallback inline function
-    def validate_stems(base_dir: str):
-        required = ["vocals.mp3", "drums.mp3", "bass.mp3", "other.mp3"]
-        problems = {}
-        for s in required:
-            if not os.path.exists(os.path.join(base_dir, s)):
-                problems[s] = "missing"
-        return {"ok": not problems, "problems": problems}
+def validate_stems(base_dir: str):
+    required = ["vocals.mp3", "drums.mp3", "bass.mp3", "other.mp3"]
+    problems = {}
+    for s in required:
+        if not os.path.exists(os.path.join(base_dir, s)):
+            problems[s] = "missing"
+    return {"ok": not problems, "problems": problems}
 
 from random import uniform
 from concurrent.futures import ThreadPoolExecutor
 from shared_state import set_progress, get_progress
 from content_base import ContentBase
+
+# --------------------------------------------------------------------------------------
+# GPU Auto-Detection
+# --------------------------------------------------------------------------------------
+def get_optimal_device():
+    """Auto-detect available GPU, fallback to CPU with detailed logging."""
+    if torch.cuda.is_available():
+        device_count = torch.cuda.device_count()
+        device_name = torch.cuda.get_device_name(0)
+        print(f" GPU detected: {device_name} (Found {device_count} device(s))")
+        return "cuda:0"
+    else:
+        print(" No GPU available — Using CPU (install CUDA/cuDNN for GPU acceleration)")
+        return "cpu"
+
 # --------------------------------------------------------------------------------------
 # Path setup
 # --------------------------------------------------------------------------------------
@@ -44,20 +49,32 @@ if stem_processing_path not in sys.path:
 # --------------------------------------------------------------------------------------
 # Channel routing
 # --------------------------------------------------------------------------------------
+UI_TO_CHANNEL_MAP = {
+    "main": "main_channel",
+    "backup": "sgs_2",
+    "drum": "son_got_drums",
+    "vocal": "son_got_acapellas",
+    "samplesplit": "sample_split",
+    "tiktok": "sample_split",
+}
+
 CHANNEL_MODULE_MAP = {
-    "son_got_acapellas": ("content_download_vocal", "Content_download_vocal"),
-    "son_got_drums": ("content_download_drum", "Content_download_drum"),
+    "son_got_acapellas": ("content_download_main", "Content_download_main"),
+    "son_got_drums": ("content_download_main", "Content_download_main"),
     "main_channel": ("content_download_main", "Content_download_main"),
-    "sgs_2": ("content_download_backup", "Content_download_backup"),
-    "sample_split": ("content_download_sample_split", "Content_download_split"),
+    "sgs_2": ("content_download_main", "Content_download_main"),
+    "sample_split": ("content_download_main", "Content_download_main"),
 }
 
 # --------------------------------------------------------------------------------------
 # Helpers: pre-process, demucs runners, fallbacks
 # --------------------------------------------------------------------------------------
 
-# Order matters (first valid wins)
-FALLBACK_MODELS = ["htdemucs_6s", "htdemucs_ft", "htdemucs"]
+# Model order: htdemucs_ft (best quality) first, then fallbacks
+# htdemucs_ft: high-quality separation with improved instrument isolation
+# htdemucs_6s: faster, medium quality fallback
+# htdemucs: legacy fallback for compatibility
+FALLBACK_MODELS = ["htdemucs_ft", "htdemucs_6s", "htdemucs"]
 
 def _prepared_copy_path(uid: str) -> str:
     os.makedirs("MP3", exist_ok=True)
@@ -128,7 +145,7 @@ def run_demucs_with_fallbacks(mp3_path: str, device: str, session_id: str):
     Returns (model_used, stem_base_path, validation) or (None, None, {"ok": False, ...})
     """
     for idx, model in enumerate(FALLBACK_MODELS, start=1):
-        set_progress(session_id, {"message": f"🌀 Separating with {model} (attempt {idx})…", "percent": 12})
+        set_progress(session_id, {"message": f" Separating with {model} (attempt {idx})…", "percent": 12})
 
         rc, tail = run_demucs_with_model_stream(mp3_path, device, model)
         out_dir = demucs_outdir_for_input(model, mp3_path)
@@ -152,7 +169,7 @@ def run_demucs_with_fallbacks(mp3_path: str, device: str, session_id: str):
         # Validate stems
         validation = validate_stems(out_dir)
         if validation.get("ok"):
-            print(f"[VALIDATE] {model} stems OK ✅ at {out_dir}")
+            print(f"[VALIDATE] {model} stems OK  at {out_dir}")
             return model, out_dir, validation
 
         print(f"[VALIDATE] Problems with {model}: {validation.get('problems')}")
@@ -204,20 +221,20 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
     elif isinstance(jitter, (int, float)) and jitter > 0:
         time.sleep(float(jitter))
 
-    print(f"\n🚀 Dispatching stem processing for track: {track_id}")
+    print(f"\n Dispatching stem processing for track: {track_id}")
     base = ContentBase({**args, "session_id": session_id})
 
     # Fetch track info
     track_info = base.get_track_info(track_id)
     if not track_info:
-        set_progress(session_id, {"message": "❌ Failed to get track info", "percent": 0})
+        set_progress(session_id, {"message": " Failed to get track info", "percent": 0})
         print("[ERROR] Failed to get track info")
         return
 
     args["track_info"] = track_info
 
     # Download audio
-    base.update_progress("🎵 Downloading track audio…", {"track_id": track_id})
+    base.update_progress(" Downloading track audio…", {"track_id": track_id})
     uid, mp3_path = base.download_audio(track_info["name"], track_info["artist"])
 
     # If download failed/too small, do a single backoff+retry (lets ContentBase rotate clients)
@@ -229,7 +246,7 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
         uid, mp3_path = base.download_audio(track_info["name"], track_info["artist"])
 
     if not uid or not os.path.exists(mp3_path) or not is_sane_audio(mp3_path):
-        set_progress(session_id, {"message": "❌ Audio download failed or file too small", "percent": 0})
+        set_progress(session_id, {"message": " Audio download failed or file too small", "percent": 0})
         print(f"[ERROR] Download failed or small: uid={uid} mp3_path={mp3_path}")
         return
 
@@ -264,28 +281,28 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
 
     if cached_dir:
         args["stem_base_path"] = os.path.abspath(cached_dir)  # <- absolute
-        set_progress(session_id, {"message": f"✅ Using cached stems ({cached_model})", "percent": 45})
+        set_progress(session_id, {"message": f" Using cached stems ({cached_model})", "percent": 45})
         print(f"[CACHE] Using cached stems at {args['stem_base_path']} (model={cached_model})")
     else:
         # Run Demucs with fallbacks and validate
-        set_progress(session_id, {"message": "🌀 Separating stems…", "percent": 12})
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        set_progress(session_id, {"message": " Separating stems…", "percent": 12})
+        device = get_optimal_device()
         model_used, stem_base_path, validation = run_demucs_with_fallbacks(mp3_for_split, device, session_id)
         if not model_used:
-            msg = "❌ Stem separation failed on all models"
+            msg = " Stem separation failed on all models"
             set_progress(session_id, {"message": msg, "percent": 0})
             print("[ERROR] Separation failed on all models")
             return
 
         args["stem_base_path"] = os.path.abspath(stem_base_path)  # <- absolute
-        set_progress(session_id, {"message": f"✅ Separation complete with {model_used}", "percent": 45})
+        set_progress(session_id, {"message": f" Separation complete with {model_used}", "percent": 45})
         print(f"[OK] Separation complete with {model_used} at {args['stem_base_path']}")
 
     # Progress metas
     progress = get_progress(session_id)
     if progress:
         progress.update({
-            "message": "🟢 Processing channels…",
+            "message": " Processing channels…",
             "meta": {"completed": 0, "total": len(selected_channels)},
             "percent": 46
         })
@@ -296,9 +313,10 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
     print(f"[TRACK] Fixed stem_base_path={fixed_sbp} | exists={os.path.isdir(fixed_sbp)} | CWD={os.getcwd()}")
 
     # Process each selected channel; on failure, print and continue
-    for channel_key in selected_channels:
+    for channel_ui in selected_channels:
+        channel_key = UI_TO_CHANNEL_MAP.get(channel_ui, channel_ui)
         if channel_key not in CHANNEL_MODULE_MAP:
-            print(f"[WARN] Unknown channel key: {channel_key} — skipping")
+            print(f"[WARN] Unknown channel key: {channel_key} (from UI: {channel_ui}) — skipping")
             continue
 
         # Use pinned path; attempt recovery if missing
@@ -311,14 +329,14 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
                 fixed_sbp = rec  # keep consistent for later channels
             else:
                 print(f"[ERROR] stem_base_path invalid for {channel_key}: {sbp}")
-                set_progress(session_id, {"message": f"❌ stem_base_path invalid for {channel_key}: {sbp}", "percent": 100})
+                set_progress(session_id, {"message": f" stem_base_path invalid for {channel_key}: {sbp}", "percent": 100})
                 continue
 
         try:
             progress = get_progress(session_id) or {}
             meta = progress.get("meta", {}) if progress else {}
             if progress:
-                progress["message"] = f"⚙️ Uploading {channel_key.upper()}…"
+                progress["message"] = f" Uploading {channel_key.upper()}…"
                 meta["channel"] = channel_key
                 progress["meta"] = meta
                 set_progress(session_id, progress)
@@ -342,14 +360,14 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
             total = int(meta.get("total", 1))
             progress["meta"] = meta
             progress["percent"] = 46 + int((meta["completed"] / total) * 54)
-            progress["message"] = f"✅ {channel_key.upper()} done"
+            progress["message"] = f" {channel_key.upper()} done"
             set_progress(session_id, progress)
 
         except Exception as e:
             traceback.print_exc()
             print(f"[ERROR] Channel processing error for {channel_key}: {e}")
             progress = get_progress(session_id) or {}
-            progress["message"] = f"❌ Error processing {channel_key.upper()} — continuing"
+            progress["message"] = f" Error processing {channel_key.upper()} — continuing"
             set_progress(session_id, progress)
             continue
 
@@ -362,7 +380,7 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
 
     # Finalize
     final = get_progress(session_id) or {}
-    final["message"] = "✅ All processing complete"
+    final["message"] = " All processing complete"
     final["percent"] = 100
     final["done"] = True
     set_progress(session_id, final)
@@ -400,7 +418,7 @@ def process_all_tracks(
             except Exception as e:
                 traceback.print_exc()
                 print(f"[ERROR] Uncaught error for {track_id}: {e}")
-                set_progress(sess_id, {"message": f"❌ Uncaught error for {track_id} — continuing", "percent": 0})
+                set_progress(sess_id, {"message": f" Uncaught error for {track_id} — continuing", "percent": 0})
 
     workers = max(1, min(len(track_ids) or 1, max_concurrent))
     with ThreadPoolExecutor(max_workers=workers) as executor:

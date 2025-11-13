@@ -11,7 +11,7 @@ def get_bpm_key(track_name: str, artist_name: str, track_id: str) -> tuple[int, 
     artist_slug = slugify(artist_name)
     url = f"https://tunebat.com/Info/{name_slug}-{artist_slug}/{track_id}"
 
-    print(f"🌐 Constructed Tunebat URL: {url}")
+    print(f" Constructed Tunebat URL: {url}")
 
     try:
         with sync_playwright() as p:
@@ -24,22 +24,22 @@ def get_bpm_key(track_name: str, artist_name: str, track_id: str) -> tuple[int, 
                 ]
             )
             page = browser.new_page()
-            print("🕸️ Navigating to page...")
+            print(" Navigating to page...")
             page.goto(url, timeout=120000)
 
             selector = "div.yIPfN span.ant-typography-secondary"
-            print("⏳ Waiting for BPM/Key block...")
+            print(" Waiting for BPM/Key block...")
 
             max_attempts = 240  # wait up to 20 mins
             for attempt in range(max_attempts):
                 try:
                     page.wait_for_selector(selector, timeout=5000)
-                    print(f"✅ Element found after {attempt * 5} seconds.")
+                    print(f" Element found after {attempt * 5} seconds.")
                     break
                 except TimeoutError:
-                    print(f"⏳ Still waiting... ({(attempt + 1) * 5}s)")
+                    print(f" Still waiting... ({(attempt + 1) * 5}s)")
             else:
-                print(f"❌ Timeout after {max_attempts * 5}s")
+                print(f" Timeout after {max_attempts * 5}s")
                 browser.close()
                 return 0, "Unknown"
 
@@ -51,10 +51,10 @@ def get_bpm_key(track_name: str, artist_name: str, track_id: str) -> tuple[int, 
             debug_path = os.path.join(debug_dir, f"{track_id}.html")
             with open(debug_path, "w", encoding="utf-8") as f:
                 f.write(html)
-                print(f"💾 Saved HTML to {debug_path}")
+                print(f" Saved HTML to {debug_path}")
 
             browser.close()
-            print("✅ Page loaded and browser closed.")
+            print(" Page loaded and browser closed.")
 
         # Parse HTML for BPM and Key
         soup = BeautifulSoup(html, "html.parser")
@@ -83,5 +83,5 @@ def get_bpm_key(track_name: str, artist_name: str, track_id: str) -> tuple[int, 
         return bpm, key
 
     except Exception as e:
-        print(f"❌ Failed to get BPM/Key from Tunebat: {e}")
+        print(f" Failed to get BPM/Key from Tunebat: {e}")
         return 0, "Unknown"

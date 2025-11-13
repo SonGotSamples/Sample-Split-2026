@@ -1,0 +1,5 @@
+Quality Table
+
+Algorithm name    | Multisong dataset                               | Synth dataset                | MDX23 Leaderboard
+                  | SDR Bass | SDR Drums | SDR Other | SDR Vocals | SDR Instrumental | SDR Vocals | SDR Instrumental | SDR Vocals
+htdemucs_ft       | 12.05    | 11.24     | 5.74      | 8.33       | 14.63            | 10.23      | 9.94             | 9.08

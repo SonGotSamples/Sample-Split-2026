@@ -9,13 +9,17 @@ from yt_dlp import YoutubeDL
 from youtube_search import YoutubeSearch
 from spotipy import Spotify
 from spotipy.oauth2 import SpotifyClientCredentials
-from upload_ec2 import Uploader
+try:
+    from upload_ec2 import Uploader
+except ModuleNotFoundError:
+    Uploader = None
+
 from shared_state import get_progress, set_progress
 from dotenv import load_dotenv
 from yt_video_multi import upload_all_stems
 from concurrent.futures import ThreadPoolExecutor
 
-# ✅ Channel name map
+#  Channel name map
 CHANNEL_NAME_MAP = {
     "son_got_acappellas": "Son Got Acappellas",
     "son_got_drums": "Son Got Drums",
@@ -26,7 +30,7 @@ CHANNEL_NAME_MAP = {
 
 load_dotenv()
 
-# ✅ Simplified YouTube auth setup
+#  Simplified YouTube auth setup
 YT_TOKEN_PATH = os.path.join("yt_tokens", "main_v2.json")
 CLIENT_SECRETS_PATH = YT_TOKEN_PATH  # Same file used for both client secret and refresh token
 
@@ -103,20 +107,26 @@ class ContentBase:
         self.trim_length = args.get("trim_length", 72)
 
         self.universal_id = args.get("universal_id")
+        # Use htdemucs_ft (high-quality) as default stem path
+        # Falls back to htdemucs_6s or htdemucs if htdemucs_ft unavailable
         self.stem_base_path = args.get("stem_base_path") or (
-            os.path.join("separated", "htdemucs_6s", self.universal_id) if self.universal_id else ""
+            os.path.join("separated", "htdemucs_ft", self.universal_id) if self.universal_id else ""
         )
 
         self.selected_genre = normalize_genre(args.get("genre"))
         self.genre_folder = self._sanitize_folder_name(self.selected_genre)
         self.video_paths = {}
 
-        print(f"\n📥 ContentBase initialized with session_id: {self.session_id}")
-        print(f"🔎 Received BPM: {args.get('bpm')} | Key: {args.get('key')}")
-        print(f"📦 Track info present: {'Yes' if self.track_info else 'No'}\n")
+        print(f"\n ContentBase initialized with session_id: {self.session_id}")
+        print(f" Received BPM: {args.get('bpm')} | Key: {args.get('key')}")
+        print(f" Track info present: {'Yes' if self.track_info else 'No'}\n")
 
-        self.CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-        self.CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+        self.CLIENT_ID = args.get("client_id") or os.getenv("SPOTIFY_CLIENT_ID")
+        self.CLIENT_SECRET = args.get("client_secret") or os.getenv("SPOTIFY_CLIENT_SECRET")
+        
+        if not self.CLIENT_ID or not self.CLIENT_SECRET:
+            raise ValueError("Spotify credentials missing: provide client_id and client_secret")
+        
         self.sp = Spotify(auth_manager=SpotifyClientCredentials(
             client_id=self.CLIENT_ID,
             client_secret=self.CLIENT_SECRET
@@ -214,7 +224,7 @@ class ContentBase:
         meta = self.build_meta(stem, channel, track)
         self.mark_step_complete(message, meta)
 
-    # ✅ FIXED VERSION: Proper indentation + structure
+    # FIXED VERSION: Proper indentation + structure
     def upload_batch_to_youtube(self, track):
         try:
             artist = track.get("artist")
@@ -241,8 +251,8 @@ class ContentBase:
             upload_all_stems(
                 stem_files=self.video_paths,         # stem_type -> mp4 path
                 title_map=title_map,                 # custom titles
-                description=DEFAULT_DESCRIPTION,     # ✅ your constant
-                tags=DEFAULT_TAGS,                   # ✅ your constant
+                description=DEFAULT_DESCRIPTION,     # your constant
+                tags=DEFAULT_TAGS,                   # your constant
                 category_id="10",
                 playlist=None,
                 privacy=self.args.get("privacy", "private"),
@@ -257,27 +267,27 @@ class ContentBase:
                 artist_file_map=None
             )
 
-            self.update_progress("✅ All stem videos uploaded", {"artist": artist})
+            self.update_progress(" All stem videos uploaded", {"artist": artist})
 
         except Exception as e:
-            self.update_progress(f"❌ Batch upload failed: {e}", {"artist": track.get("artist")})
+            self.update_progress(f" Batch upload failed: {e}", {"artist": track.get("artist")})
 
     def upload_to_youtube(self, stem_type, video_path, title, track):
         try:
             if stem_type and video_path:
                 self.video_paths[stem_type] = video_path
         except Exception as e:
-            self.update_progress(f"❌ Upload tracking failed: {e}", {"stem": stem_type})
+            self.update_progress(f"load tracking failed: {e}", {"stem": stem_type})
 
     def upload_to_ec2_if_needed(self, local_path):
         if self.args.get("ec2"):
             try:
-                self.update_progress("📡 Uploading to EC2...", {"path": local_path})
+                self.update_progress(" Uploading to EC2...", {"path": local_path})
                 uploader = Uploader()
                 uploader.upload_to_ec2(local_path)
-                self.update_progress("✅ Upload to EC2 complete", {"path": local_path})
+                self.update_progress(" Upload to EC2 complete", {"path": local_path})
             except Exception as e:
-                self.update_progress(f"❌ EC2 upload failed: {e}", {"path": local_path})
+                self.update_progress(f" EC2 upload failed: {e}", {"path": local_path})
 
     def download_audio(self, title, artist):
         search_term = f"{title} - {artist} topic"
@@ -285,7 +295,7 @@ class ContentBase:
             results = YoutubeSearch(search_term, max_results=1).to_json()
             video_id = json.loads(results)["videos"][0]["id"]
         except Exception as e:
-            print("❌ YouTube search failed:", e)
+            print(" YouTube search failed:", e)
             return None, None
 
         try:
@@ -312,14 +322,18 @@ class ContentBase:
                     os.rename(temp_mp3, final_path)
                     return uid, final_path
                 else:
-                    print(f"❌ MP3 not found after download: {temp_mp3}")
+                    print(f" MP3 not found after download: {temp_mp3}")
                     return None, None
         except Exception as e:
-            print("❌ YouTube download failed:", e)
+            print(" YouTube download failed:", e)
             return None, None
 
     def download_thumbnail(self, url, artist=None, title=None, bpm=None, key=None):
         try:
+            if not url:
+                print(" Thumbnail URL is None/empty")
+                return None
+                
             artist = artist or self.track_info.get("artist", "Unknown")
             title = title or self.track_info.get("name", "Unknown")
             bpm = bpm or self.track_info.get("tempo", 0)
@@ -332,15 +346,20 @@ class ContentBase:
             thumb_path = os.path.join(thumb_dir, "cover.png")
 
             if os.path.exists(thumb_path):
+                print(f"usng cached thumbnail: {thumb_path}")
                 return thumb_path
 
-            data = requests.get(url).content
+            print(f" Downloading thumbnail from: {url}")
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            
             with open(thumb_path, "wb") as f:
-                f.write(data)
+                f.write(response.content)
 
+            print(f" Thumbnail saved: {thumb_path}")
             return thumb_path
         except Exception as e:
-            print("❌ Thumbnail download failed:", e)
+            print(f" Thumbnail download failed: {e} (URL: {url})")
             return None
 
     def get_track_info(self, track_id):
@@ -371,7 +390,7 @@ class ContentBase:
                         key_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
                         key = key_names[key_index] if 0 <= key_index < len(key_names) else key
                 except Exception as e:
-                    print(f"⚠️ Spotify fallback failed: {e}")
+                    print(f" Spotify fallback failed: {e}")
 
             track_info = {
                 "name": title,
@@ -386,11 +405,11 @@ class ContentBase:
             }
 
             self.track_info = track_info
-            print(f"🎯 Final track info: BPM={track_info.get('tempo')} | Key={track_info.get('key')}\n")
+            print(f" Final track info: BPM={track_info.get('tempo')} | Key={track_info.get('key')}\n")
             return track_info
 
         except Exception as e:
-            print(f"❌ Track info error: {e}")
+            print(f" Track info error: {e}")
             return None
 
     def trim_audio(self, path: str, duration: int) -> str:
@@ -401,7 +420,7 @@ class ContentBase:
             trimmed.export(path, format="mp3")
             return path
         except Exception as e:
-            print(f"❌ Failed to trim audio: {e}")
+            print(f" Failed to trim audio: {e}")
             return path
 
     def stems_already_exist(self):

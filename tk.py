@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
 from concurrent.futures import ThreadPoolExecutor
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
@@ -28,12 +28,24 @@ CLIENT_SECRET = "c47363028a7c478285fe1e27ecb4428f"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class StemRequest(BaseModel):
+    """Request model for stem splitting with YouTube scheduling and comments."""
     track_id: str
     channels: List[str]
     yt: bool = False
     ec2: bool = False
     trim: bool = False
+    dry_run: bool = False
     genre: Optional[str] = None
+
+    # Metadata fields (auto-fill if empty)
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
+    privacy: str = "public"  # Default to public
+    made_for_kids: bool = False
+    monetize: bool = False
+
+    # Per-channel comments
+    comments: Optional[Dict[str, str]] = None  # {channel_key: comment_text}
 
     # Scheduling fields
     startTime: Optional[str] = None
@@ -110,18 +122,28 @@ def split_and_schedule(request: StemRequest):
     input_id = extract_spotify_id(request.track_id)
 
     # --- Shared arguments for all tracks ---
+    # Auto-fill: use provided values or defaults
     shared_args = {
         "yt": request.yt,
         "ec2": request.ec2,
         "trim": request.trim,
-        "privacy": getattr(request, "privacy", "private"),
-        "made_for_kids": getattr(request, "made_for_kids", False),
-        "tags": getattr(request, "tags", []),
-        "description": getattr(request, "description", ""),
-        "monetize": getattr(request, "monetize", False),
-        "genre": (getattr(request, "genre", None) or "Hip-Hop"),
+        "dry_run": request.dry_run,
+        # Spotify credentials
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        # Privacy defaults to "public" unless explicitly set
+        "privacy": request.privacy or "public",
+        "made_for_kids": request.made_for_kids or False,
+        # Tags: use provided or default empty list (populated from DEFAULT_TAGS if needed)
+        "tags": request.tags or [],
+        # Description: use provided or empty string (auto-filled by YouTube upload handler)
+        "description": request.description or "",
+        "monetize": request.monetize or False,
+        "genre": request.genre or "Hip-Hop",
         "trim_track": getattr(request, "trim_track", False),
         "trim_length": getattr(request, "trim_length", 72),
+        # Per-channel comments: map of channel_key -> comment_text
+        "comments": request.comments or {},
     }
 
     # --- Scheduling Fix ---
@@ -193,7 +215,7 @@ def split_and_schedule(request: StemRequest):
         artist, title = info["artists"][0]["name"], info["name"]
         batch.append((title, artist, track_id))
         set_progress(session_id, {
-            "message": "🟡 Preparing track metadata...",
+            "message": " Preparing track metadata...",
             "percent": 0,
             "meta": {
                 "track_id": track_id,
@@ -272,5 +294,5 @@ if __name__ == "__main__":
 
     threading.Thread(target=open_browser).start()
 
-    print("🌐 Starting FastAPI server...")
+    print(" Starting FastAPI server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)

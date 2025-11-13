@@ -1,9 +1,15 @@
-# File: content_download_main_fixed.py
-"""Main channel stem processor.
+# File: content_download_main.py
+"""Main channel stem processor with advanced audio mixing.
 
-This module prepares acapella, drums, and instrumental stems for the main channel.
-It mirrors the structure used by other stem processors so that progress reporting,
-folder layouts, and YouTube uploads behave consistently.
+High-quality stem separation and processing:
+- Acapella (vocals only)
+- Drums (percussion)
+- Instrumental (other + drums + bass combined with loudness normalization)
+
+Features:
+- Uses htdemucs_ft model for best quality
+- Proper stem mixing with normalization
+- Consistent loudness across all stems
 """
 
 from __future__ import annotations
@@ -16,10 +22,14 @@ try:
     from moviepy import AudioFileClip, ColorClip, CompositeVideoClip, ImageClip
     MOVIEPY_AVAILABLE = True
     MOVIEPY_IMPORT_ERROR: Optional[Exception] = None
-except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
-    AudioFileClip = ColorClip = ImageClip = None  # type: ignore[assignment]
+    print(" moviepy available — MP4 rendering enabled")
+except ModuleNotFoundError as exc:
+    AudioFileClip = ColorClip = ImageClip = None
     MOVIEPY_AVAILABLE = False
     MOVIEPY_IMPORT_ERROR = exc
+    print(f" moviepy not available: {exc}")
+    print("   Install via: pip install moviepy")
+    print("   Requires: ffmpeg (install separately if missing)")
 from mutagen.easyid3 import EasyID3
 from mutagen.id3 import COMM, ID3, TIT2
 from mutagen.mp3 import MP3
@@ -34,6 +44,7 @@ from content_base import (
     normalize_genre,
 )
 from shared_state import get_progress, set_progress
+from stem_processor import StemProcessor
 
 # Register custom comment tag once.
 if "comment" not in EasyID3.valid_keys:
@@ -41,11 +52,36 @@ if "comment" not in EasyID3.valid_keys:
 
 
 class Content_download_main(ContentBase):
-    """Prepare acapella, drums, and instrumental stems for the main channel."""
+    """Prepare acapella, drums, and instrumental stems for the main channel.
+    
+    Stem mapping:
+    - Acapella: vocals only
+    - Drums: percussion instruments
+    - Instrumental: other + drums + bass (full instruments without vocals)
+    """
 
     STEM_DEFINITIONS: Dict[str, Dict[str, object]] = {
-        "Acapella": {"stem_key": "acapella", "sources": ["vocals.mp3"]},
-        "Drums": {"stem_key": "drums", "sources": ["drums.mp3"]},
+        # Acapella: vocals stem directly from model
+        "Acapella": {
+            "stem_key": "acapella",
+            "sources": ["vocals.mp3"],
+            "mix": False,
+            "description": "Vocals-only stem"
+        },
+        # Drums: percussion directly from model
+        "Drums": {
+            "stem_key": "drums",
+            "sources": ["drums.mp3"],
+            "mix": False,
+            "description": "Drums/percussion stem"
+        },
+        # Instrumental: combination of other + drums + bass (no vocals)
+        "Instrumental": {
+            "stem_key": "instrumental",
+            "sources": ["other.mp3", "drums.mp3", "bass.mp3"],
+            "mix": True,
+            "description": "Full instrumental (other + drums + bass)"
+        },
     }
 
     def __init__(self, args: Dict):
@@ -113,8 +149,9 @@ class Content_download_main(ContentBase):
             error_hint = "pip install moviepy"
             detail = f" ({MOVIEPY_IMPORT_ERROR})" if MOVIEPY_IMPORT_ERROR else ""
             print(
-                "⚠️ moviepy is not installed; skipping video rendering for "
-                f"{stem_type}. Install via `{error_hint}` to enable video exports{detail}."
+                f" Cannot render {stem_type} video: moviepy not available{detail}\n"
+                f"   Install: {error_hint}\n"
+                f"   Also need: ffmpeg (install separately if missing)"
             )
             return None
 
@@ -133,7 +170,7 @@ class Content_download_main(ContentBase):
                 thumb = thumb_path if thumb_path and os.path.exists(thumb_path) else None
                 if thumb:
                     thumb_clip = ImageClip(thumb).with_duration(audio_clip.duration)
-                    thumb_clip = _clip_resize(thumb_clip, new_size=(720, 720))
+                    thumb_clip = apply_moviepy_resize(thumb_clip, new_size=(720, 720))
                     thumb_clip = thumb_clip.with_position("center")
                     background = ColorClip(
                         size=(1280, 720), color=(0, 0, 0), duration=audio_clip.duration
@@ -150,31 +187,35 @@ class Content_download_main(ContentBase):
             final_video.write_videofile(out_path, fps=1, codec="libx264", audio_codec="aac")
             return out_path
         except Exception as exc:
-            print(f"❌ Failed to render {stem_type} video: {exc}")
+            print(f" Failed to render {stem_type} video: {exc}")
             return None
 
     def _mix_sources(self, source_paths: List[str]) -> Optional[AudioSegment]:
-        """Combine multiple stems into a single AudioSegment."""
-        combined: Optional[AudioSegment] = None
-        for src in source_paths:
-            seg = AudioSegment.from_file(src)
-            seg = seg.set_channels(2).set_frame_rate(44100) - 1.5
-            combined = seg if combined is None else combined.overlay(seg)
-
-        if combined is None:
+        """
+        Combine multiple stems using advanced mixing with loudness normalization.
+        
+        Uses StemProcessor for:
+        - Format standardization (2-channel, 44.1kHz)
+        - Per-stem gain reduction to prevent clipping
+        - Combined loudness normalization
+        - Fade in/out for smooth transitions
+        """
+        if not source_paths:
             return None
 
-        peak = combined.max_dBFS
-        target = -1.0
-        if peak > target:
-            combined = combined.apply_gain(target - peak)
-        return combined
+        # Use StemProcessor for professional-quality mixing
+        mixed = StemProcessor.mix_stems(
+            stem_paths=source_paths,
+            target_loudness=-1.0,
+            apply_fade=True
+        )
+        return mixed
 
     def _prepare_audio(self, base_folder: str, config: Dict[str, object]) -> Optional[str]:
         sources = [os.path.join(self.stem_base_path, name) for name in config.get("sources", [])]
         missing = [path for path in sources if not os.path.exists(path)]
         if missing:
-            print(f"⚠️ Missing sources for {config.get('stem_key')}: {missing}")
+            print(f" Missing sources for {config.get('stem_key')}: {missing}")
             if config.get("mix"):
                 return None
             if len(missing) == len(sources):
@@ -194,7 +235,7 @@ class Content_download_main(ContentBase):
             else:
                 shutil.copy(sources[0], audio_path)
         except Exception as exc:
-            print(f"❌ Failed to prepare audio for {stem_key}: {exc}")
+            print(f" Failed to prepare audio for {stem_key}: {exc}")
             return None
 
         return audio_path if os.path.exists(audio_path) else None
@@ -226,7 +267,7 @@ class Content_download_main(ContentBase):
         )
         audio_path = self._prepare_audio(base_folder, config)
         if not audio_path:
-            self.update_progress(f"❌ {stem_type} audio unavailable", meta)
+            self.update_progress(f" {stem_type} audio unavailable", meta)
             return False
 
         if self.trim_track:
@@ -250,11 +291,11 @@ class Content_download_main(ContentBase):
         if not video_path:
             if not MOVIEPY_AVAILABLE:
                 self.update_progress(
-                    "❌ moviepy not installed; install with `pip install moviepy` to render videos",
+                    " moviepy not installed; install with `pip install moviepy` to render videos",
                     meta,
                 )
             else:
-                self.update_progress(f"❌ Failed to render {stem_type} video", meta)
+                self.update_progress(f" Failed to render {stem_type} video", meta)
             return False
 
         stem_key = str(config.get("stem_key", stem_type.lower()))
@@ -272,6 +313,7 @@ class Content_download_main(ContentBase):
         return True
 
     def upload_batch_to_youtube(self, track: Dict[str, Any]):
+        """Upload all stems to YouTube with metadata and per-channel comments."""
         if not (self.args.get("yt") and self.video_paths):
             return
 
@@ -282,13 +324,14 @@ class Content_download_main(ContentBase):
 
         key_text = str(key).strip() if key else ""
 
-        # ✅ FIXED: Added hyphen between artist and song name
+        # Build titles with artist, track name, stem type, and BPM/Key
         title_map = {
             "acapella": f"{artist} - {title} Acapella [{bpm} BPM{(' ' + key_text) if key_text else ''}]",
             "drums": f"{artist} - {title} Drums [{bpm} BPM]",
             "instrumental": f"{artist} - {title} Instrumental [{bpm} BPM{(' ' + key_text) if key_text else ''}]",
         }
 
+        # Merge default tags with artist/title/stem types
         tags = list({
             *DEFAULT_TAGS,
             artist,
@@ -298,23 +341,34 @@ class Content_download_main(ContentBase):
             "instrumental",
         })
 
+        # Use provided description or DEFAULT_DESCRIPTION
+        description = self.args.get("description") or DEFAULT_DESCRIPTION
+
+        # Get per-channel comment (if available)
+        comments_map = self.args.get("comments", {})
+        channel_key = self.channel_label.lower().replace(" ", "_")
+        comment = comments_map.get(channel_key) if comments_map else None
+
+        # Privacy defaults to "public"
+        privacy = self.args.get("privacy", "public")
+
         from yt_video_multi import upload_all_stems
 
-        self.update_progress("📤 Uploading main channel stems to YouTube...", {"artist": artist})
+        self.update_progress(" Uploading main channel stems to YouTube...", {"artist": artist})
         upload_all_stems(
             stem_files=self.video_paths,
             title_map=title_map,
-            description=DEFAULT_DESCRIPTION,
+            description=description,
             tags=tags,
             category_id="10",
             playlist=self.args.get("playlist"),
-            privacy=self.args.get("privacy", "private"),
+            privacy=privacy,
             publish_at=self.args.get("publish_at"),
             tz=self.args.get("tz", "America/Chicago"),
-            made_for_kids=False,
+            made_for_kids=self.args.get("made_for_kids", False),
             lang="en",
             thumbnail_map=self.thumbnail_map,
-            comment=None,
+            comment=comment,  # Per-channel comment support
             dry_run=self.args.get("dry_run", False),
             channel_override=self.args.get("channel"),
         )
@@ -322,11 +376,11 @@ class Content_download_main(ContentBase):
     def download(self, track_id: str):
         track = self.track_info or self.get_track_info(track_id)
         if not track:
-            self.fail_progress_with_meta("❌ track_info unavailable", "Acapella", self.channel_label, {"id": track_id})
+            self.fail_progress_with_meta(" track_info unavailable", "Acapella", self.channel_label, {"id": track_id})
             return
 
         if not self.stem_base_path or not os.path.isdir(self.stem_base_path):
-            self.fail_progress_with_meta("❌ stem_base_path missing", "Acapella", self.channel_label, track)
+            self.fail_progress_with_meta(" stem_base_path missing", "Acapella", self.channel_label, track)
             return
 
         total_steps = 2 + len(self.STEM_DEFINITIONS) * 4
@@ -337,7 +391,7 @@ class Content_download_main(ContentBase):
         artist = track.get("artist", "Unknown Artist")
         title = track.get("name", "Unknown Track")
 
-        self.progress_with_meta("🖼️ Fetching thumbnail...", 2, total_steps, "Acapella", self.channel_label, track)
+        self.progress_with_meta(" Fetching thumbnail...", 2, total_steps, "Acapella", self.channel_label, track)
         thumb_path = self.download_thumbnail(track.get("img"), artist=artist, title=title, bpm=bpm, key=key)
 
         processed_any = False
@@ -347,17 +401,17 @@ class Content_download_main(ContentBase):
             processed_any = processed_any or success
 
         if not processed_any:
-            self.fail_progress_with_meta("❌ No stems were processed for the main channel", "Acapella", self.channel_label, track)
+            self.fail_progress_with_meta(" No stems were processed for the main channel", "Acapella", self.channel_label, track)
             return
 
         if self.args.get("yt"):
             self.upload_batch_to_youtube(track)
         else:
             meta = self.build_meta("Acapella", self.channel_label, track)
-            self.update_progress("⏭️ Skipping YouTube upload (yt flag disabled)", meta)
+            self.update_progress(" Skipping YouTube upload (yt flag disabled)", meta)
 
-        self.progress_with_meta("✅ Main channel stems complete!", total_steps, total_steps, "Acapella", self.channel_label, track)
-        self.mark_complete_with_meta("✅ Main channel upload ready", "Acapella", self.channel_label, track)
+        self.progress_with_meta(" Main channel stems complete!", total_steps, total_steps, "Acapella", self.channel_label, track)
+        self.mark_complete_with_meta(" Main channel upload ready", "Acapella", self.channel_label, track)
 
 
 # Helper to normalize resize availability across environments
