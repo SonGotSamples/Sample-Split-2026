@@ -18,14 +18,19 @@ from shared_state import get_progress, set_progress
 from dotenv import load_dotenv
 from yt_video_multi import upload_all_stems
 from concurrent.futures import ThreadPoolExecutor
+from fuzzy_matcher import FuzzyMatcher
+from logger_central import logger
+from validation_engine import validate_stems as validate_stems_fn
+from config_manager import get_config
 
-#  Channel name map
+#  Channel name map (maps channel keys to display names for folder structure)
 CHANNEL_NAME_MAP = {
-    "son_got_acappellas": "Son Got Acappellas",
-    "son_got_drums": "Son Got Drums",
-    "main_channel": "Main Channel",
+    "main_channel": "Main",
+    "sgs_2": "Back Up",
+    "son_got_drums": "Drum",
+    "son_got_acapellas": "Vocal",
     "sample_split": "Sample Split",
-    "sgs_2": "SGS 2"
+    "tiktok_channel": "Tik Tok",
 }
 
 load_dotenv()
@@ -110,7 +115,7 @@ class ContentBase:
         # Use htdemucs_ft (high-quality) as default stem path
         # Falls back to htdemucs_6s or htdemucs if htdemucs_ft unavailable
         self.stem_base_path = args.get("stem_base_path") or (
-            os.path.join("separated", "htdemucs_ft", self.universal_id) if self.universal_id else ""
+            os.path.join("Separated", "htdemucs_ft", self.universal_id) if self.universal_id else ""
         )
 
         self.selected_genre = normalize_genre(args.get("genre"))
@@ -121,11 +126,16 @@ class ContentBase:
         print(f" Received BPM: {args.get('bpm')} | Key: {args.get('key')}")
         print(f" Track info present: {'Yes' if self.track_info else 'No'}\n")
 
-        self.CLIENT_ID = args.get("client_id") or os.getenv("SPOTIFY_CLIENT_ID")
-        self.CLIENT_SECRET = args.get("client_secret") or os.getenv("SPOTIFY_CLIENT_SECRET")
+        self.CLIENT_ID = args.get("client_id")
+        self.CLIENT_SECRET = args.get("client_secret")
         
         if not self.CLIENT_ID or not self.CLIENT_SECRET:
-            raise ValueError("Spotify credentials missing: provide client_id and client_secret")
+            spotify_config = get_config().get("spotify", {})
+            self.CLIENT_ID = self.CLIENT_ID or spotify_config.get("client_id") or os.getenv("SPOTIFY_CLIENT_ID")
+            self.CLIENT_SECRET = self.CLIENT_SECRET or spotify_config.get("client_secret") or os.getenv("SPOTIFY_CLIENT_SECRET")
+        
+        if not self.CLIENT_ID or not self.CLIENT_SECRET:
+            raise ValueError("Spotify credentials missing: provide in config.json, .env, or args")
         
         self.sp = Spotify(auth_manager=SpotifyClientCredentials(
             client_id=self.CLIENT_ID,
@@ -290,12 +300,33 @@ class ContentBase:
                 self.update_progress(f" EC2 upload failed: {e}", {"path": local_path})
 
     def download_audio(self, title, artist):
-        search_term = f"{title} - {artist} topic"
+        search_term = f"{title} - {artist}"
         try:
-            results = YoutubeSearch(search_term, max_results=1).to_json()
-            video_id = json.loads(results)["videos"][0]["id"]
+            results = YoutubeSearch(search_term, max_results=5).to_json()
+            results_data = json.loads(results)["videos"]
+            
+            if not results_data:
+                print(" YouTube search returned no results")
+                return None, None
+            
+            candidates = [
+                {"title": v.get("title", ""), "id": v.get("id", "")}
+                for v in results_data
+            ]
+            
+            fuzzy = FuzzyMatcher()
+            best_match_id, score = fuzzy.match_song(title, artist, candidates)
+            
+            if not best_match_id:
+                print(f" Fuzzy match failed (score < 70), using top result")
+                video_id = results_data[0]["id"]
+            else:
+                video_id = best_match_id
+                print(f" Using fuzzy matched video: {video_id} (score: {score}%)")
+                
         except Exception as e:
             print(" YouTube search failed:", e)
+            logger.log_error("YOUTUBE_SEARCH", str(e), {"search_term": search_term})
             return None, None
 
         try:
@@ -303,6 +334,14 @@ class ContentBase:
             ydl_opts = {
                 "format": "bestaudio/best",
                 "outtmpl": "%(uploader)s - %(id)s.%(ext)s",
+                "extractor_args": {
+                    "youtube": {
+                        "player_client": ["android"],
+                        "skip_webpage": True
+                    }
+                },
+                "quiet": False,
+                "no_warnings": True,
                 "postprocessors": [{
                     "key": "FFmpegExtractAudio",
                     "preferredcodec": "mp3",
@@ -320,12 +359,15 @@ class ContentBase:
 
                 if os.path.exists(temp_mp3):
                     os.rename(temp_mp3, final_path)
+                    print(f" ✅ Downloaded audio: {title} - {artist}")
                     return uid, final_path
                 else:
                     print(f" MP3 not found after download: {temp_mp3}")
+                    logger.log_error("DOWNLOAD_MOVE", f"MP3 file not found: {temp_mp3}", {"title": title, "artist": artist})
                     return None, None
         except Exception as e:
             print(" YouTube download failed:", e)
+            logger.log_error("YOUTUBE_DOWNLOAD", str(e), {"title": title, "artist": artist, "video_id": video_id})
             return None, None
 
     def download_thumbnail(self, url, artist=None, title=None, bpm=None, key=None):

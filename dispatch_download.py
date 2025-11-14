@@ -8,6 +8,9 @@ import subprocess
 import threading
 import time
 
+from logger_central import logger
+from checkpoint_recovery import _recovery as recovery_manager
+
 def validate_stems(base_dir: str):
     required = ["vocals.mp3", "drums.mp3", "bass.mp3", "other.mp3"]
     problems = {}
@@ -19,7 +22,7 @@ def validate_stems(base_dir: str):
 from random import uniform
 from concurrent.futures import ThreadPoolExecutor
 from shared_state import set_progress, get_progress
-from content_base import ContentBase
+from content_base import ContentBase, CHANNEL_NAME_MAP
 
 # --------------------------------------------------------------------------------------
 # GPU Auto-Detection
@@ -55,15 +58,20 @@ UI_TO_CHANNEL_MAP = {
     "drum": "son_got_drums",
     "vocal": "son_got_acapellas",
     "samplesplit": "sample_split",
-    "tiktok": "sample_split",
+    "tiktok": "tiktok_channel",
+    "mainchannel": "main_channel",
+    "sgs2": "sgs_2",
+    "songotdrums": "son_got_drums",
+    "songotacapellas": "son_got_acapellas",
 }
 
 CHANNEL_MODULE_MAP = {
-    "son_got_acapellas": ("content_download_main", "Content_download_main"),
-    "son_got_drums": ("content_download_main", "Content_download_main"),
     "main_channel": ("content_download_main", "Content_download_main"),
     "sgs_2": ("content_download_main", "Content_download_main"),
+    "son_got_drums": ("content_download_main", "Content_download_main"),
+    "son_got_acapellas": ("content_download_main", "Content_download_main"),
     "sample_split": ("content_download_main", "Content_download_main"),
+    "tiktok_channel": ("content_download_main", "Content_download_main"),
 }
 
 # --------------------------------------------------------------------------------------
@@ -105,7 +113,7 @@ def prepare_input_for_demucs(src_mp3: str, prepared_path: str) -> bool:
 def demucs_outdir_for_input(model_name: str, input_mp3: str) -> str:
     """Demucs names output folder after the input basename (e.g., uid OR uid__prep)."""
     base = os.path.splitext(os.path.basename(input_mp3))[0]
-    return os.path.join("separated", model_name, base)
+    return os.path.join("Separated", model_name, base)
 
 def run_demucs_with_model_stream(mp3_path: str, device: str, model_name: str):
     """
@@ -197,7 +205,7 @@ def recover_stem_dir(universal_id: str) -> str | None:
     candidates = []
     for model in FALLBACK_MODELS:
         for suffix in ("", "__prep"):
-            cand = os.path.abspath(os.path.join("separated", model, f"{universal_id}{suffix}"))
+            cand = os.path.abspath(os.path.join("Separated", model, f"{universal_id}{suffix}"))
             candidates.append(cand)
     for c in candidates:
         if os.path.isdir(c):
@@ -214,6 +222,12 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
       - per_track_cooldown_sec: float|tuple -> sleep after finishing a track (default 0)
       - retry_backoff_sec: float|tuple -> sleep before a single re-download attempt (default (15, 30))
     """
+    print(f"\n[DISPATCH] Selected channels to process: {selected_channels}")
+    
+    # Determine upload destinations (respect yt flag; don't force based on channel selection)
+    args["yt"] = args.get("yt", False)
+    args["tiktok"] = args.get("tiktok", False) or "tiktok" in selected_channels
+
     # Gentle jitter to avoid bursty starts when running concurrently
     jitter = args.get("start_jitter_sec", (0.5, 2.0))
     if isinstance(jitter, (tuple, list)) and len(jitter) == 2:
@@ -222,6 +236,14 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
         time.sleep(float(jitter))
 
     print(f"\n Dispatching stem processing for track: {track_id}")
+    
+    recovery_manager.save_track_checkpoint(
+        track_id=track_id,
+        playlist_id=args.get("playlist_id", "unknown"),
+        status="processing",
+        metadata={"channels": selected_channels}
+    )
+    
     base = ContentBase({**args, "session_id": session_id})
 
     # Fetch track info
@@ -269,7 +291,7 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
     prepared_base = os.path.splitext(os.path.basename(prep_path))[0]
     for model in FALLBACK_MODELS:
         for base_name in (original_base, prepared_base):
-            candidate = os.path.join("separated", model, base_name)
+            candidate = os.path.join("Separated", model, base_name)
             if os.path.exists(candidate):
                 v = validate_stems(candidate)
                 if v.get("ok"):
@@ -313,8 +335,10 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
     print(f"[TRACK] Fixed stem_base_path={fixed_sbp} | exists={os.path.isdir(fixed_sbp)} | CWD={os.getcwd()}")
 
     # Process each selected channel; on failure, print and continue
-    for channel_ui in selected_channels:
+    for idx, channel_ui in enumerate(selected_channels):
+        print(f"[CHANNEL_LOOP] Processing channel {idx+1}/{len(selected_channels)}: {channel_ui}")
         channel_key = UI_TO_CHANNEL_MAP.get(channel_ui, channel_ui)
+        print(f"[CHANNEL_LOOP] Mapped {channel_ui} -> {channel_key}")
         if channel_key not in CHANNEL_MODULE_MAP:
             print(f"[WARN] Unknown channel key: {channel_key} (from UI: {channel_ui}) — skipping")
             continue
@@ -336,8 +360,9 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
             progress = get_progress(session_id) or {}
             meta = progress.get("meta", {}) if progress else {}
             if progress:
-                progress["message"] = f" Uploading {channel_key.upper()}…"
-                meta["channel"] = channel_key
+                channel_display = CHANNEL_NAME_MAP.get(channel_key, channel_key)
+                progress["message"] = f" Uploading {channel_display}…"
+                meta["channel"] = channel_display
                 progress["meta"] = meta
                 set_progress(session_id, progress)
 
@@ -356,16 +381,21 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
             progress = get_progress(session_id) or {}
             meta = progress.get("meta", {})
             meta["completed"] = int(meta.get("completed", 0)) + 1
-            meta["channel"] = channel_key
+            channel_display = CHANNEL_NAME_MAP.get(channel_key, channel_key)
+            meta["channel"] = channel_display
             total = int(meta.get("total", 1))
             progress["meta"] = meta
             progress["percent"] = 46 + int((meta["completed"] / total) * 54)
-            progress["message"] = f" {channel_key.upper()} done"
+            progress["message"] = f" {channel_display} done"
             set_progress(session_id, progress)
 
         except Exception as e:
             traceback.print_exc()
             print(f"[ERROR] Channel processing error for {channel_key}: {e}")
+            print(f"[ERROR] Full traceback:")
+            import sys
+            exc_info = sys.exc_info()
+            traceback.print_exception(*exc_info)
             progress = get_progress(session_id) or {}
             progress["message"] = f" Error processing {channel_key.upper()} — continuing"
             set_progress(session_id, progress)
@@ -378,7 +408,13 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
     elif isinstance(cooldown, (int, float)) and cooldown > 0:
         time.sleep(float(cooldown))
 
-    # Finalize
+    recovery_manager.save_track_checkpoint(
+        track_id=track_id,
+        playlist_id=args.get("playlist_id", "unknown"),
+        status="completed",
+        metadata={"channels": selected_channels, "stem_base_path": args.get("stem_base_path")}
+    )
+    
     final = get_progress(session_id) or {}
     final["message"] = " All processing complete"
     final["percent"] = 100
@@ -406,6 +442,19 @@ def process_all_tracks(
       - set args['start_jitter_sec']=(0.5, 2.0)
       - set args['per_track_cooldown_sec']=(20, 45) for large batches
     """
+    print(f"[BATCH] process_all_tracks called with selected_channels: {selected_channels}")
+    logger.start_session(session_id, {
+        "total_tracks": len(track_ids),
+        "channels": selected_channels,
+        "max_concurrent": max_concurrent
+    })
+    
+    recovery_manager.save_playlist_checkpoint(
+        playlist_id=session_id,
+        status="processing",
+        metadata={"total_tracks": len(track_ids), "channels": selected_channels}
+    )
+    
     semaphore = threading.Semaphore(max_concurrent)
 
     def run_with_semaphore(track_id, sess_id):
@@ -414,10 +463,15 @@ def process_all_tracks(
             if per_track_args and track_id in per_track_args:
                 merged_args.update(per_track_args[track_id])
             try:
+                track_info = merged_args.get("track_info", {})
+                title = track_info.get("name", "Unknown")
+                artist = track_info.get("artist", "Unknown")
+                logger.log_track_start(track_id, title, artist)
                 dispatch_stem_processing(track_id, selected_channels, merged_args, sess_id)
             except Exception as e:
                 traceback.print_exc()
                 print(f"[ERROR] Uncaught error for {track_id}: {e}")
+                logger.log_error("TRACK_PROCESSING", str(e), {"track_id": track_id})
                 set_progress(sess_id, {"message": f" Uncaught error for {track_id} — continuing", "percent": 0})
 
     workers = max(1, min(len(track_ids) or 1, max_concurrent))
@@ -425,3 +479,11 @@ def process_all_tracks(
         for track_id in track_ids:
             full_session_id = f"{session_id}__{track_id}"
             executor.submit(run_with_semaphore, track_id, full_session_id)
+    
+    recovery_manager.save_playlist_checkpoint(
+        playlist_id=session_id,
+        status="completed",
+        metadata={"total_tracks": len(track_ids), "channels": selected_channels}
+    )
+    
+    logger.end_session("completed")

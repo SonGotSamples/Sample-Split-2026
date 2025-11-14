@@ -1,3 +1,12 @@
+# ===== GPU SETUP INSTRUCTIONS =====
+# For GPU acceleration (NVIDIA):
+# 1. Install CUDA Toolkit: https://developer.nvidia.com/cuda-downloads (version 12.1 or 11.8)
+# 2. Install PyTorch with GPU support:
+#    For CUDA 12.1: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#    For CUDA 11.8: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# 3. Verify GPU: python -c "import torch; print(torch.cuda.is_available())"
+# ===================================
+
 # --- Web & API framework ---
 fastapi>=0.115.0
 uvicorn>=0.30.0
@@ -8,7 +17,11 @@ yt-dlp>=2025.10.22
 mutagen>=1.47.0
 moviepy>=2.1.1
 demucs>=4.0.1  # htdemucs_ft model provides best quality stem separation
-torch>=2.5.1  # official PyTorch build supports Python 3.12–3.14
+# GPU Support: Install PyTorch with CUDA 12.1 support using:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Or for CUDA 11.8: --index-url https://download.pytorch.org/whl/cu118
+torch>=2.5.1  # GPU-enabled version (install separately with command above)
+torchaudio>=2.5.1  # Audio processing with GPU support
 
 # --- Video rendering and manipulation ---
 imageio>=2.37.0
@@ -46,3 +59,10 @@ redis>=5.0.3
 watchdog>=4.0.0
 pytz>=2024.2
 pydub>=0.25.1
+
+# --- Fuzzy matching for song identification (99%+ accuracy) ---
+rapidfuzz>=3.0.0
+
+# --- TikTok Integration ---
+TikTokApi>=1.0.0
+requests-toolbelt>=1.0.0

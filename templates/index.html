@@ -249,7 +249,7 @@
 
 <script>
 const stems = ["Acapella", "Drums", "Bass", "Instrumental", "Melody"];
-const channels = ["Main", "Backup", "Drum", "Vocal", "Sample Split", "TikTok"];
+const channels = ["Main", "Back Up", "Drum", "Vocal", "Sample Split", "Tik Tok"];
 const grid = document.getElementById("channelsGrid");
 
 channels.forEach(ch => {
@@ -290,6 +290,7 @@ function runSplit() {
 
   // Build per-channel configuration
   const selectedChannels = [];
+  const selectedStems = {};
   const comments = {};
 
   channels.forEach(ch => {
@@ -300,6 +301,16 @@ function runSplit() {
       const channelComment = document.getElementById(id + "Comment").value;
       if (channelComment) {
         comments[id] = channelComment;
+      }
+      
+      // Capture selected stems for this channel
+      const activeStems = Array.from(document.querySelectorAll(`#${id}Stems .stem-toggle.active`))
+        .map(btn => btn.dataset.stem);
+      if (activeStems.length > 0) {
+        selectedStems[id] = activeStems;
+      } else {
+        // Default to all stems if none selected
+        selectedStems[id] = stems.map(s => s.toLowerCase());
       }
     }
   });
@@ -313,6 +324,7 @@ function runSplit() {
   const payload = {
     track_id: playlistId,
     channels: selectedChannels,
+    selected_stems: selectedStems,
     yt: uploadYouTube,
     dry_run: false,
     ec2: false,

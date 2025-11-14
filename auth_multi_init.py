@@ -10,10 +10,10 @@ Each channel token is saved in ./yt_tokens:
   - acapella_v2.json
   - split_v2.json
 
-✅ Tokens refresh automatically forever.
-✅ Confirmation prompt after every login ensures no channel mix-ups.
-✅ Automatically finds any client_secret*.json file inside yt_tokens.
-✅ Compatible with latest google-auth-oauthlib (uses run_local_server).
+ Tokens refresh automatically forever.
+ Confirmation prompt after every login ensures no channel mix-ups.
+ Automatically finds any client_secret*.json file inside yt_tokens.
+ Compatible with latest google-auth-oauthlib (uses run_local_server).
 """
 
 import os, glob
@@ -49,16 +49,16 @@ CHANNELS = [
 # ================================================================
 client_secret_files = list(TOKEN_DIR.glob("client_secret*.json"))
 if not client_secret_files:
-    raise FileNotFoundError(f"⚠️ No client_secret JSON found in {TOKEN_DIR.resolve()}")
+    raise FileNotFoundError(f" No client_secret JSON found in {TOKEN_DIR.resolve()}")
 
 CLIENT_SECRET_PATH = client_secret_files[0]
-print(f"✅ Using client secret file: {CLIENT_SECRET_PATH.name}")
+print(f" Using client secret file: {CLIENT_SECRET_PATH.name}")
 
 # ================================================================
 # AUTH FUNCTION
 # ================================================================
 def authenticate_channel(label, filename):
-    print(f"\n🔑 {label} — checking authentication...")
+    print(f"\n {label} — checking authentication...")
     token_path = TOKEN_DIR / filename
     creds = None
 
@@ -66,19 +66,19 @@ def authenticate_channel(label, filename):
     if token_path.exists():
         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
         if creds and creds.valid:
-            print(f"✅ {label} already authenticated and valid.")
+            print(f" {label} already authenticated and valid.")
             return creds
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
                 token_path.write_text(creds.to_json())
-                print(f"🔄 Auto-refreshed {label} token — permanent access maintained.")
+                print(f" Auto-refreshed {label} token — permanent access maintained.")
                 return creds
             except Exception as e:
-                print(f"⚠️ Refresh failed for {label}: {e}")
+                print(f" Refresh failed for {label}: {e}")
 
     # New login if no valid token
-    print(f"🌐 Starting new permanent auth for {label}. A browser window will open...")
+    print(f" Starting new permanent auth for {label}. A browser window will open...")
     flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET_PATH), SCOPES)
 
     # Launch browser and authenticate
@@ -91,31 +91,31 @@ def authenticate_channel(label, filename):
     youtube = build("youtube", "v3", credentials=creds)
     me = youtube.channels().list(part="snippet", mine=True).execute()
     title = me["items"][0]["snippet"]["title"] if me.get("items") else "Unknown Channel"
-    print(f"✅ Authorized YouTube Channel: {title}")
+    print(f" Authorized YouTube Channel: {title}")
 
     # Confirmation step
     confirm = input(f"Is this correct for {label}? (y/n): ").strip().lower()
     if confirm != "y":
-        print(f"⚠️ Removing {filename}. Please re-authenticate the correct account.")
+        print(f" Removing {filename}. Please re-authenticate the correct account.")
         os.remove(token_path)
         return authenticate_channel(label, filename)
 
-    print(f"✅ Confirmed: {label} linked to '{title}' → Saved as {filename}")
+    print(f" Confirmed: {label} linked to '{title}' → Saved as {filename}")
     return creds
 
 # ================================================================
 # MAIN
 # ================================================================
 def main():
-    print("\n🚀 Multi-Channel YouTube OAuth (Permanent + Confirmation)")
+    print("\n Multi-Channel YouTube OAuth (Permanent + Confirmation)")
     print("----------------------------------------------------------")
     for label, filename in CHANNELS:
         try:
             authenticate_channel(label, filename)
         except Exception as e:
-            print(f"❌ Failed for {label}: {e}")
+            print(f" Failed for {label}: {e}")
 
-    print("\n🎉 All channels authenticated permanently and confirmed!")
+    print("\n\ All channels authenticated permanently and confirmed!")
     print(f"Tokens stored in: {TOKEN_DIR.resolve()}\n")
 
 if __name__ == "__main__":
