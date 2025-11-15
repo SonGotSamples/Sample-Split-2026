@@ -78,6 +78,16 @@ STEM_ICONS = {
 }
 
 
+WATERMARK_CONFIG = {
+    "Main": {"text": "SGS", "opacity": 0.8, "font_size": 60},
+    "Back Up": {"text": "SGS2", "opacity": 0.8, "font_size": 60},
+    "Drum": {"text": "SGS", "opacity": 0.8, "font_size": 60},
+    "Vocal": {"text": "SGS", "opacity": 0.8, "font_size": 60},
+    "Sample Split": {"text": "SGS", "opacity": 0.8, "font_size": 60},
+    "Tik Tok": {"text": "SGS", "opacity": 0.8, "font_size": 60},
+}
+
+
 def apply_moviepy_resize(clip, new_size=None, *args, **kwargs):
     """
     Resize a moviepy clip.
@@ -291,4 +301,43 @@ def add_intro_card(duration: float, channel: str, thumb_path: Optional[str] = No
     except Exception as e:
         print(f"Warning: Could not create intro card: {e}")
         return None
+
+
+def add_watermark(clip: "CompositeVideoClip", channel: str) -> "CompositeVideoClip":
+    """
+    Add bottom-left watermark to a video clip.
+    
+    Args:
+        clip: MoviePy video clip
+        channel: Channel name (e.g., "Main", "Back Up")
+        
+    Returns:
+        Composite clip with watermark, or original clip if moviepy unavailable
+    """
+    if not MOVIEPY_AVAILABLE or clip is None:
+        return clip
+    
+    try:
+        config = WATERMARK_CONFIG.get(channel, WATERMARK_CONFIG.get("Main"))
+        watermark_text = config["text"]
+        opacity = config["opacity"]
+        font_size = config["font_size"]
+        
+        watermark = TextClip(
+            text=watermark_text,
+            font_size=font_size,
+            color="white",
+            method="label"
+        ).with_duration(clip.duration)
+        
+        watermark = watermark.with_opacity(opacity)
+        
+        margin = 20
+        watermark = watermark.with_position((margin, clip.size[1] - font_size - (margin * 2)))
+        
+        return CompositeVideoClip([clip, watermark])
+        
+    except Exception as e:
+        print(f"Warning: Could not add watermark: {e}")
+        return clip
 
