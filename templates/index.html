@@ -232,7 +232,9 @@
     <div class="section-header">Options</div>
     <div class="checkbox-row">
       <label><input type="checkbox" id="monetize" /> Enable Monetization</label>
-      <label><input type="checkbox" id="uploadYouTube" /> Upload to YouTube</label>
+      <label><input type="checkbox" id="uploadYouTube" checked /> Upload to YouTube</label>
+      <label><input type="checkbox" id="uploadTikTok" /> Upload to TikTok</label>
+      <label><input type="checkbox" id="renderVideos" /> Create MP4 Videos (even without upload)</label>
       <label><input type="checkbox" id="trimTrack" /> Trim Track</label>
     </div>
 
@@ -249,7 +251,7 @@
 
 <script>
 const stems = ["Acapella", "Drums", "Bass", "Instrumental", "Melody"];
-const channels = ["Main", "Backup", "Drum", "Vocal", "Sample Split", "TikTok"];
+const channels = ["Main", "SGS 2", "Drum", "Acappella", "Sample Split", "Tik Tok"];
 const grid = document.getElementById("channelsGrid");
 
 channels.forEach(ch => {
@@ -268,8 +270,29 @@ channels.forEach(ch => {
   grid.appendChild(card);
 });
 
+// Section 5: Stem selection automatically activates it (no separate toggle needed)
 document.querySelectorAll(".stem-toggle").forEach(btn => {
-  btn.addEventListener("click", () => btn.classList.toggle("active"));
+  btn.addEventListener("click", function() {
+    // Toggle active state
+    this.classList.toggle("active");
+    
+    // Section 5: Automatically enable upload when stem is selected
+    // If any stem is active, ensure upload is enabled
+    const channelCard = this.closest(".channel-card");
+    if (channelCard) {
+      const channelCheckbox = channelCard.querySelector('input[type="checkbox"]');
+      if (this.classList.contains("active") && channelCheckbox) {
+        // Auto-enable channel when stem is selected
+        channelCheckbox.checked = true;
+      }
+    }
+    
+    // Auto-enable YouTube upload if any stems are selected
+    const anyActive = document.querySelectorAll(".stem-toggle.active").length > 0;
+    if (anyActive) {
+      document.getElementById("uploadYouTube").checked = true;
+    }
+  });
 });
 
 function runSplit() {
@@ -284,12 +307,15 @@ function runSplit() {
   const privacy = document.getElementById('privacy').value;
   const monetize = document.getElementById('monetize').checked;
   const uploadYouTube = document.getElementById('uploadYouTube').checked;
+  const uploadTikTok = document.getElementById('uploadTikTok').checked;
+  const renderVideos = document.getElementById('renderVideos').checked;
   const trimTrack = document.getElementById('trimTrack').checked;
   const trimLength = parseInt(document.getElementById('trimLength').value) || 0;
   const madeForKids = document.getElementById('audienceKids').checked;
 
   // Build per-channel configuration
   const selectedChannels = [];
+  const selectedStems = {};
   const comments = {};
 
   channels.forEach(ch => {
@@ -300,6 +326,16 @@ function runSplit() {
       const channelComment = document.getElementById(id + "Comment").value;
       if (channelComment) {
         comments[id] = channelComment;
+      }
+      
+      // Capture selected stems for this channel
+      const activeStems = Array.from(document.querySelectorAll(`#${id}Stems .stem-toggle.active`))
+        .map(btn => btn.dataset.stem);
+      if (activeStems.length > 0) {
+        selectedStems[id] = activeStems;
+      } else {
+        // Default to all stems if none selected
+        selectedStems[id] = stems.map(s => s.toLowerCase());
       }
     }
   });
@@ -313,7 +349,10 @@ function runSplit() {
   const payload = {
     track_id: playlistId,
     channels: selectedChannels,
+    selected_stems: selectedStems,
     yt: uploadYouTube,
+    tiktok: uploadTikTok,
+    render_videos: renderVideos,
     dry_run: false,
     ec2: false,
     trim: trimTrack,

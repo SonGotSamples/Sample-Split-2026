@@ -19,13 +19,14 @@ from dotenv import load_dotenv
 from yt_video_multi import upload_all_stems
 from concurrent.futures import ThreadPoolExecutor
 
-#  Channel name map
+#  Channel name map (maps channel keys to display names for folder structure)
 CHANNEL_NAME_MAP = {
-    "son_got_acappellas": "Son Got Acappellas",
-    "son_got_drums": "Son Got Drums",
-    "main_channel": "Main Channel",
+    "main_channel": "Main",
+    "sgs_2": "SGS 2",
+    "son_got_drums": "Drum",
+    "son_got_acapellas": "Acappella",
     "sample_split": "Sample Split",
-    "sgs_2": "SGS 2"
+    "tiktok_channel": "Tik Tok",
 }
 
 load_dotenv()
@@ -110,7 +111,7 @@ class ContentBase:
         # Use htdemucs_ft (high-quality) as default stem path
         # Falls back to htdemucs_6s or htdemucs if htdemucs_ft unavailable
         self.stem_base_path = args.get("stem_base_path") or (
-            os.path.join("separated", "htdemucs_ft", self.universal_id) if self.universal_id else ""
+            os.path.join("Separated", "htdemucs_ft", self.universal_id) if self.universal_id else ""
         )
 
         self.selected_genre = normalize_genre(args.get("genre"))
@@ -290,43 +291,288 @@ class ContentBase:
                 self.update_progress(f" EC2 upload failed: {e}", {"path": local_path})
 
     def download_audio(self, title, artist):
-        search_term = f"{title} - {artist} topic"
-        try:
-            results = YoutubeSearch(search_term, max_results=1).to_json()
-            video_id = json.loads(results)["videos"][0]["id"]
-        except Exception as e:
-            print(" YouTube search failed:", e)
+        """
+        Enhanced audio download with strict filtering and verification.
+        Implements Section 1 requirements: strict source filtering, duration matching,
+        fuzzy verification, multi-stage verification, and proactive safeguards.
+        """
+        from mutagen.mp3 import MP3 as MutagenMP3
+        
+        official_duration = None
+        
+        # Get official duration from track info if available
+        if self.track_info:
+            # Try to get duration from track info (may be set during get_track_info)
+            official_duration = self.track_info.get("duration_seconds")
+            if not official_duration:
+                # Try to get from Spotify API
+                try:
+                    track_id = self.track_info.get("id")
+                    if track_id:
+                        track = self.sp.track(track_id)
+                        # Duration in milliseconds, convert to seconds
+                        official_duration = track.get("duration_ms", 0) / 1000.0
+                except Exception:
+                    pass
+        
+        # Multi-stage search with priority order
+        search_terms = [
+            f"{title} - {artist} topic",
+            f"{title} - {artist} official audio",
+            f"{title} - {artist} album",
+            f"{title} - {artist}",
+        ]
+        
+        # Reject patterns (music videos, live, unofficial)
+        reject_patterns = [
+            "music video", "mv", "live", "performance", "concert",
+            "unofficial", "remix", "edit", "cover", "karaoke",
+            "instrumental", "acapella", "extended", "version"
+        ]
+        
+        candidates = []
+        max_candidates = 10
+        
+        # Search with multiple terms and collect candidates
+        for search_term in search_terms:
+            try:
+                results = YoutubeSearch(search_term, max_results=max_candidates).to_json()
+                videos = json.loads(results).get("videos", [])
+                
+                for video in videos:
+                    video_title = video.get("title", "").lower()
+                    video_id = video.get("id")
+                    
+                    # Reject if matches reject patterns
+                    should_reject = any(pattern in video_title for pattern in reject_patterns)
+                    if should_reject:
+                        continue
+                    
+                    # Prioritize Topic/Official Audio/Album sources
+                    priority = 0
+                    if "topic" in video_title:
+                        priority = 3
+                    elif "official audio" in video_title or "official" in video_title:
+                        priority = 2
+                    elif "album" in video_title:
+                        priority = 1
+                    
+                    candidates.append({
+                        "id": video_id,
+                        "title": video.get("title", ""),
+                        "priority": priority,
+                        "search_term": search_term
+                    })
+                    
+                    if len(candidates) >= max_candidates:
+                        break
+                        
+            except Exception as e:
+                print(f" Search term '{search_term}' failed: {e}")
+                continue
+        
+        if not candidates:
+            print(" No valid candidates found")
             return None, None
-
-        try:
-            os.makedirs("MP3", exist_ok=True)
-            ydl_opts = {
-                "format": "bestaudio/best",
-                "outtmpl": "%(uploader)s - %(id)s.%(ext)s",
-                "postprocessors": [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192"
-                }]
-            }
-
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_id, download=False)
-                uid = f"{info['uploader']} - {info['id']}"
-                temp_mp3 = f"{uid}.mp3"
-                final_path = f"MP3/{uid}.mp3"
-
-                ydl.download([video_id])
-
-                if os.path.exists(temp_mp3):
-                    os.rename(temp_mp3, final_path)
-                    return uid, final_path
-                else:
-                    print(f" MP3 not found after download: {temp_mp3}")
-                    return None, None
-        except Exception as e:
-            print(" YouTube download failed:", e)
-            return None, None
+        
+        # Sort by priority (higher first)
+        candidates.sort(key=lambda x: x["priority"], reverse=True)
+        
+        # Track best candidate for fallback if all strict checks fail
+        best_fallback = None
+        best_fallback_score = 0
+        
+        # Multi-stage verification: try candidates until one passes all checks
+        for candidate in candidates:
+            video_id = candidate["id"]
+            candidate_title = candidate["title"]
+            
+            try:
+                # Extract info without downloading first
+                ydl_opts_info = {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+                }
+                
+                with YoutubeDL(ydl_opts_info) as ydl:
+                    info = ydl.extract_info(video_id, download=False)
+                    
+                    # Duration matching (mandatory if official duration available)
+                    # Use percentage-based tolerance: ±2 seconds OR ±5% (whichever is larger)
+                    # This handles YouTube videos with intros/outros that extend the track
+                    if official_duration and info.get("duration"):
+                        candidate_duration = info.get("duration")
+                        duration_diff = abs(candidate_duration - official_duration)
+                        percentage_diff = (duration_diff / official_duration) * 100
+                        # Allow ±2 seconds OR ±5% (whichever is larger)
+                        # For tracks > 3 minutes, allow up to 10% difference (capped at 30s) to handle intros/outros
+                        # For tracks > 4 minutes, allow up to 15% difference (capped at 40s) for very long tracks
+                        base_tolerance = max(2.0, official_duration * 0.05)
+                        if official_duration > 240:  # Tracks longer than 4 minutes
+                            extended_tolerance = max(base_tolerance, official_duration * 0.15)
+                            max_tolerance = min(extended_tolerance, 40.0)  # Cap at 40 seconds for very long tracks
+                        elif official_duration > 180:  # Tracks longer than 3 minutes
+                            extended_tolerance = max(base_tolerance, official_duration * 0.10)
+                            max_tolerance = min(extended_tolerance, 30.0)  # Cap at 30 seconds for longer tracks
+                        else:
+                            max_tolerance = min(base_tolerance, 10.0)  # Cap at 10 seconds for shorter tracks
+                        
+                        if duration_diff > max_tolerance:
+                            print(f" Duration mismatch: {candidate_duration:.1f}s vs {official_duration:.1f}s (diff: {duration_diff:.1f}s, {percentage_diff:.1f}%, tolerance: {max_tolerance:.1f}s)")
+                            continue
+                    
+                    # Artist + Title Pair Verification with stricter fuzzy matching
+                    info_title = info.get("title", "")
+                    info_uploader = info.get("uploader", "")
+                    
+                    # Use rapidfuzz directly for better control
+                    from rapidfuzz import fuzz
+                    
+                    # Fuzzy match both artist and title separately
+                    artist_score = fuzz.token_set_ratio(artist.lower(), info_uploader.lower()) if info_uploader else 0
+                    title_score = fuzz.token_set_ratio(title.lower(), info_title.lower()) if info_title else 0
+                    
+                    # Stricter thresholds: require both artist AND title to match well
+                    # Allow slightly lower combined score if title is perfect (100%)
+                    min_artist_score = 70  # Slightly relaxed for artist variations
+                    min_title_score = 75   # Minimum title match
+                    min_combined_score = 82  # Slightly relaxed from 85
+                    combined_score = (artist_score + title_score) / 2
+                    
+                    # Track best candidate for fallback
+                    if combined_score > best_fallback_score:
+                        best_fallback = candidate
+                        best_fallback_score = combined_score
+                    
+                    # Special case: if title is perfect (100%), allow lower artist score
+                    if title_score >= 95 and combined_score >= 80:
+                        # Title is very close, allow lower artist match
+                        pass
+                    elif artist_score < min_artist_score or title_score < min_title_score or combined_score < min_combined_score:
+                        print(f" Fuzzy match too low: artist={artist_score:.1f}%, title={title_score:.1f}%, combined={combined_score:.1f}%")
+                        continue
+                    
+                    # Proactive safeguards: check for MV skits/dialogue indicators
+                    description = info.get("description", "").lower()
+                    if any(indicator in description for indicator in ["skit", "dialogue", "interview", "behind the scenes"]):
+                        print(f" Rejected: contains MV skits/dialogue indicators")
+                        continue
+                    
+                    # All checks passed - download this candidate
+                    print(f" ✓ Verified candidate: {info_title} (duration: {info.get('duration', 0):.1f}s, fuzzy: {combined_score:.1f}%)")
+                    
+                    os.makedirs("MP3", exist_ok=True)
+                    ydl_opts = {
+                        "quiet": True,
+                        "no_warnings": True,
+                        "format": "bestaudio/best",
+                        "outtmpl": "%(uploader)s - %(id)s.%(ext)s",
+                        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+                        "postprocessors": [{
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": "192"
+                        }]
+                    }
+                    
+                    with YoutubeDL(ydl_opts) as ydl:
+                        uid = f"{info['uploader']} - {info['id']}"
+                        temp_mp3 = f"{uid}.mp3"
+                        final_path = f"MP3/{uid}.mp3"
+                        
+                        ydl.download([video_id])
+                        
+                        if os.path.exists(temp_mp3):
+                            # Verify downloaded file duration matches (use same tolerance as pre-download check)
+                            try:
+                                audio = MutagenMP3(temp_mp3)
+                                downloaded_duration = audio.info.length
+                                if official_duration:
+                                    duration_diff = abs(downloaded_duration - official_duration)
+                                    # Use same extended tolerance logic as pre-download check
+                                    base_tolerance = max(2.0, official_duration * 0.05)
+                                    if official_duration > 240:  # Tracks longer than 4 minutes
+                                        extended_tolerance = max(base_tolerance, official_duration * 0.15)
+                                        max_tolerance = min(extended_tolerance, 40.0)
+                                    elif official_duration > 180:  # Tracks longer than 3 minutes
+                                        extended_tolerance = max(base_tolerance, official_duration * 0.10)
+                                        max_tolerance = min(extended_tolerance, 30.0)
+                                    else:
+                                        max_tolerance = min(base_tolerance, 10.0)
+                                    if duration_diff > max_tolerance:
+                                        print(f" Downloaded file duration mismatch: {downloaded_duration:.1f}s vs {official_duration:.1f}s (diff: {duration_diff:.1f}s, tolerance: {max_tolerance:.1f}s)")
+                                        os.remove(temp_mp3)
+                                        continue
+                            except Exception:
+                                pass
+                            
+                            os.rename(temp_mp3, final_path)
+                            return uid, final_path
+                        else:
+                            print(f" MP3 not found after download: {temp_mp3}")
+                            continue
+                            
+            except Exception as e:
+                print(f" Candidate verification failed: {e}")
+                continue
+        
+        # If all strict checks failed, try fallback with relaxed criteria
+        if best_fallback and best_fallback_score >= 75:
+            print(f" ⚠️ All strict checks failed, trying best fallback candidate (score: {best_fallback_score:.1f}%)")
+            video_id = best_fallback["id"]
+            try:
+                ydl_opts_info = {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+                }
+                
+                with YoutubeDL(ydl_opts_info) as ydl:
+                    info = ydl.extract_info(video_id, download=False)
+                    
+                    # Relaxed duration check: ±10 seconds OR ±10% (whichever is larger, max 20 seconds)
+                    if official_duration and info.get("duration"):
+                        candidate_duration = info.get("duration")
+                        duration_diff = abs(candidate_duration - official_duration)
+                        tolerance = max(10.0, official_duration * 0.10)
+                        max_tolerance = min(tolerance, 20.0)
+                        
+                        if duration_diff > max_tolerance:
+                            print(f" Fallback candidate also fails duration check: {duration_diff:.1f}s > {max_tolerance:.1f}s")
+                            return None, None
+                    
+                    # Download fallback candidate
+                    print(f" ✓ Using fallback candidate: {info.get('title', 'Unknown')}")
+                    os.makedirs("MP3", exist_ok=True)
+                    ydl_opts = {
+                        "quiet": True,
+                        "no_warnings": True,
+                        "format": "bestaudio/best",
+                        "outtmpl": "%(uploader)s - %(id)s.%(ext)s",
+                        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+                        "postprocessors": [{
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": "192"
+                        }]
+                    }
+                    
+                    with YoutubeDL(ydl_opts) as ydl:
+                        uid = f"{info['uploader']} - {info['id']}"
+                        temp_mp3 = f"{uid}.mp3"
+                        final_path = f"MP3/{uid}.mp3"
+                        
+                        ydl.download([video_id])
+                        
+                        if os.path.exists(temp_mp3):
+                            os.rename(temp_mp3, final_path)
+                            return uid, final_path
+            except Exception as e:
+                print(f" Fallback candidate download failed: {e}")
+        
+        print(" All candidates failed verification (including fallback)")
+        return None, None
 
     def download_thumbnail(self, url, artist=None, title=None, bpm=None, key=None):
         try:
@@ -392,6 +638,9 @@ class ContentBase:
                 except Exception as e:
                     print(f" Spotify fallback failed: {e}")
 
+            # Get duration from Spotify track
+            duration_seconds = track.get("duration_ms", 0) / 1000.0 if track.get("duration_ms") else None
+            
             track_info = {
                 "name": title,
                 "artist": artist,
@@ -401,7 +650,9 @@ class ContentBase:
                 "popularity": track["popularity"],
                 "img": img_url,
                 "tempo": bpm,
-                "key": key
+                "key": key,
+                "duration_seconds": duration_seconds,
+                "id": track_id
             }
 
             self.track_info = track_info

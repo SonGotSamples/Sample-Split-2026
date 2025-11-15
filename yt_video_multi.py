@@ -4,7 +4,7 @@ Multi-channel YouTube uploader/orchestrator with new token scheme (v2).
 - Tokens live under ./yt_tokens/
 - Unified client secret lives under ./yt_tokens/<client_secret_*.json>
 - No legacy abc_* prefixes anywhere.
-- Prints ✅ for each successful channel auth.
+- Prints  for each successful channel auth.
 - Keeps playlists, scheduling, comments, uploads orchestration.
 """
 
@@ -59,7 +59,7 @@ TOKEN_BACKUP = "backup_v2.json"
 # Back-compat: this constant is sometimes referenced
 MAIN_PLAYLIST_TOKEN = TOKEN_MAIN  # required by user: set to "main_v2.json"
 
-# Channel display names (shown in ✅ prints)
+# Channel display names (shown in  prints)
 CHANNEL_DISPLAY_BY_TOKEN: Dict[str, str] = {
     TOKEN_ACAPELLA: "Son Got Acapellas",
     TOKEN_DRUMS: "Son Got Drums",
@@ -84,6 +84,7 @@ CHANNEL_KEY_TO_TOKEN: Dict[str, str] = {
     "backup_channel": TOKEN_BACKUP,
     "sample_split": TOKEN_SPLIT,
     "split_channel": TOKEN_SPLIT,
+    "vocal": TOKEN_MAIN,
 }
 
 # Upload map: stem/role -> token filename
@@ -430,7 +431,7 @@ def get_youtube_client(token_file: str) -> Any:
         _fail(f"Failed to build YouTube client for {token_file}: {e}")
     # Print confirmation per user requirement
     channel_name = CHANNEL_DISPLAY_BY_TOKEN.get(token_file, token_file)
-    print(f"✅ Authenticated YouTube client for {channel_name}")
+    print(f" Authenticated YouTube client for {channel_name}")
     return yt
 
 
@@ -1072,7 +1073,7 @@ def upload_all_stems(
     results: Dict[str, str] = {}
     if dry_run:
         for j in jobs:
-            get_youtube_client(j.channel_token)  # prints ✅ per-channel even in dry-run
+            get_youtube_client(j.channel_token)  # prints  per-channel even in dry-run
             LOG.info(f"[DRY-RUN] Would upload to {j.channel_name}: {j.file.name}")
             if j.playlist:
                 LOG.info(f"[DRY-RUN] Would ensure playlist: {j.playlist}")

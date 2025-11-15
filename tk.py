@@ -27,11 +27,23 @@ CLIENT_ID = "fbf9f3a2da0b44758a496ca7fa8a9290"
 CLIENT_SECRET = "c47363028a7c478285fe1e27ecb4428f"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+UI_CHANNEL_DISPLAY_MAP = {
+    "mainchannel": "Main",
+    "sgs2": "SGS 2",
+    "songotdrums": "Drum",
+    "songotacapellas": "Acappella",
+    "samplesplit": "Sample Split",
+    "tiktok": "Tik Tok",
+}
+
 class StemRequest(BaseModel):
     """Request model for stem splitting with YouTube scheduling and comments."""
     track_id: str
     channels: List[str]
-    yt: bool = False
+    selected_stems: Optional[Dict[str, List[str]]] = None  # {channel_key: [stem1, stem2, ...]}
+    yt: bool = True  # Section 5: Default to ON
+    tiktok: bool = False  # Upload to TikTok
+    render_videos: bool = False  # Create MP4s even without upload (for local use)
     ec2: bool = False
     trim: bool = False
     dry_run: bool = False
@@ -105,7 +117,7 @@ def get_all_track_ids(playlist_id: str) -> List[str]:
 @app.post("/cleanup")
 async def cleanup_files():
     try:
-        for folder in ["MP3", "separated", "Thumbnails", "tunebat_debug"]:
+        for folder in ["MP3", "Separated", "Thumbnails", "tunebat_debug"]:
             path = os.path.join(BASE_DIR, folder)
             if os.path.exists(path):
                 shutil.rmtree(path, ignore_errors=True)
@@ -121,10 +133,30 @@ async def cleanup_files():
 def split_and_schedule(request: StemRequest):
     input_id = extract_spotify_id(request.track_id)
 
+    # --- Convert selected_stems and comments keys from UI IDs to channel_keys ---
+    # Frontend sends stems/comments keyed by UI ID (e.g., "main", "backup"), but backend needs channel_keys
+    from dispatch_download import UI_TO_CHANNEL_MAP
+    converted_stems = {}
+    if request.selected_stems:
+        for ui_id, stems in request.selected_stems.items():
+            channel_key = UI_TO_CHANNEL_MAP.get(ui_id, ui_id)
+            converted_stems[channel_key] = stems
+    
+    converted_comments = {}
+    if request.comments:
+        for ui_id, comment_text in request.comments.items():
+            channel_key = UI_TO_CHANNEL_MAP.get(ui_id, ui_id)
+            converted_comments[channel_key] = comment_text
+    
     # --- Shared arguments for all tracks ---
     # Auto-fill: use provided values or defaults
+    # Section 5: Default upload to ON if not explicitly set
+    upload_enabled = request.yt if hasattr(request, 'yt') and request.yt is not None else True
+    tiktok_enabled = getattr(request, 'tiktok', False)
     shared_args = {
-        "yt": request.yt,
+        "yt": upload_enabled,
+        "tiktok": tiktok_enabled,
+        "render_videos": request.render_videos if hasattr(request, 'render_videos') else False,
         "ec2": request.ec2,
         "trim": request.trim,
         "dry_run": request.dry_run,
@@ -143,7 +175,9 @@ def split_and_schedule(request: StemRequest):
         "trim_track": getattr(request, "trim_track", False),
         "trim_length": getattr(request, "trim_length", 72),
         # Per-channel comments: map of channel_key -> comment_text
-        "comments": request.comments or {},
+        "comments": converted_comments,
+        # Selected stems per channel (keyed by channel_key, not UI ID)
+        "selected_stems": converted_stems,
     }
 
     # --- Scheduling Fix ---
@@ -177,7 +211,7 @@ def split_and_schedule(request: StemRequest):
         1440: "Daily",
     }
     interval_label_display = label_map.get(interval_minutes, f"Every {interval_minutes} Minutes")
-    print(f"🕐 Interval set to {interval_minutes} minutes ({interval_label_display})")
+    print(f" Interval set to {interval_minutes} minutes ({interval_label_display})")
 
     normalized_start = ""
     if start_time_str:
@@ -197,16 +231,23 @@ def split_and_schedule(request: StemRequest):
     ))
 
     # --- Determine if input is playlist or single track ---
+    # Try playlist first, fall back to single track if it fails
     try:
         playlist = sp.playlist(input_id)
         track_ids = get_all_track_ids(input_id)
         is_playlist = True
-    except:
+        print(f"[SPOTIFY] Detected playlist: {playlist.get('name', 'Unknown')} ({len(track_ids)} tracks)")
+    except Exception as e:
+        # If playlist lookup fails, treat as single track ID
+        # This is expected for track IDs, so we don't log it as an error
         track_ids = [input_id]
         is_playlist = False
+        print(f"[SPOTIFY] Treating as single track ID: {input_id}")
 
     batch = []
     sessions = []
+    
+    print(f"[API] Received channels from frontend: {request.channels}")
 
     for idx, track_id in enumerate(track_ids):
         session_id = f"{input_id}__{track_id}"
@@ -214,6 +255,7 @@ def split_and_schedule(request: StemRequest):
         info = sp.track(track_id)
         artist, title = info["artists"][0]["name"], info["name"]
         batch.append((title, artist, track_id))
+        channel_displays = [UI_CHANNEL_DISPLAY_MAP.get(ch, ch) for ch in request.channels]
         set_progress(session_id, {
             "message": " Preparing track metadata...",
             "percent": 0,
@@ -221,7 +263,7 @@ def split_and_schedule(request: StemRequest):
                 "track_id": track_id,
                 "title": title,
                 "artist": artist,
-                "channels": request.channels,
+                "channels": channel_displays,
                 "playlist_id": input_id,
                 "index": idx + 1,
                 "total_tracks": len(track_ids)
@@ -263,6 +305,7 @@ def split_and_schedule(request: StemRequest):
             per_track_args[track_id] = args
 
         # --- Run all tracks sequentially (1 song → all stems) ---
+        print(f"[PROCESS] Starting processing with channels: {request.channels}")
         process_all_tracks(
             track_ids,
             request.channels,
@@ -274,10 +317,11 @@ def split_and_schedule(request: StemRequest):
 
     threading.Thread(target=run_full_pipeline).start()
 
+    channel_displays = [UI_CHANNEL_DISPLAY_MAP.get(ch, ch) for ch in request.channels]
     return {
         "message": "Playlist processing started" if is_playlist else "Single track processing started",
         "tracks_processed": len(track_ids),
-        "channels": request.channels,
+        "channels": channel_displays,
         "session_ids": sessions
     }
 

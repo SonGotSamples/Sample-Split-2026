@@ -19,7 +19,7 @@ def validate_stems(base_dir: str):
 from random import uniform
 from concurrent.futures import ThreadPoolExecutor
 from shared_state import set_progress, get_progress
-from content_base import ContentBase
+from content_base import ContentBase, CHANNEL_NAME_MAP
 
 # --------------------------------------------------------------------------------------
 # GPU Auto-Detection
@@ -54,16 +54,22 @@ UI_TO_CHANNEL_MAP = {
     "backup": "sgs_2",
     "drum": "son_got_drums",
     "vocal": "son_got_acapellas",
+    "acappella": "son_got_acapellas",
     "samplesplit": "sample_split",
-    "tiktok": "sample_split",
+    "tiktok": "tiktok_channel",
+    "mainchannel": "main_channel",
+    "sgs2": "sgs_2",
+    "songotdrums": "son_got_drums",
+    "songotacapellas": "son_got_acapellas",
 }
 
 CHANNEL_MODULE_MAP = {
-    "son_got_acapellas": ("content_download_main", "Content_download_main"),
-    "son_got_drums": ("content_download_main", "Content_download_main"),
     "main_channel": ("content_download_main", "Content_download_main"),
     "sgs_2": ("content_download_main", "Content_download_main"),
+    "son_got_drums": ("content_download_main", "Content_download_main"),
+    "son_got_acapellas": ("content_download_main", "Content_download_main"),
     "sample_split": ("content_download_main", "Content_download_main"),
+    "tiktok_channel": ("content_download_main", "Content_download_main"),
 }
 
 # --------------------------------------------------------------------------------------
@@ -105,7 +111,7 @@ def prepare_input_for_demucs(src_mp3: str, prepared_path: str) -> bool:
 def demucs_outdir_for_input(model_name: str, input_mp3: str) -> str:
     """Demucs names output folder after the input basename (e.g., uid OR uid__prep)."""
     base = os.path.splitext(os.path.basename(input_mp3))[0]
-    return os.path.join("separated", model_name, base)
+    return os.path.join("Separated", model_name, base)
 
 def run_demucs_with_model_stream(mp3_path: str, device: str, model_name: str):
     """
@@ -197,7 +203,7 @@ def recover_stem_dir(universal_id: str) -> str | None:
     candidates = []
     for model in FALLBACK_MODELS:
         for suffix in ("", "__prep"):
-            cand = os.path.abspath(os.path.join("separated", model, f"{universal_id}{suffix}"))
+            cand = os.path.abspath(os.path.join("Separated", model, f"{universal_id}{suffix}"))
             candidates.append(cand)
     for c in candidates:
         if os.path.isdir(c):
@@ -214,6 +220,12 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
       - per_track_cooldown_sec: float|tuple -> sleep after finishing a track (default 0)
       - retry_backoff_sec: float|tuple -> sleep before a single re-download attempt (default (15, 30))
     """
+    print(f"\n[DISPATCH] Selected channels to process: {selected_channels}")
+    
+    # Determine upload destinations (respect yt flag; don't force based on channel selection)
+    args["yt"] = args.get("yt", False)
+    args["tiktok"] = args.get("tiktok", False) or "tiktok" in selected_channels
+
     # Gentle jitter to avoid bursty starts when running concurrently
     jitter = args.get("start_jitter_sec", (0.5, 2.0))
     if isinstance(jitter, (tuple, list)) and len(jitter) == 2:
@@ -253,14 +265,43 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
     args["universal_id"] = uid
     args["mp3_path"] = mp3_path
 
-    # Pre-process input (resample + loudness normalize)
-    prep_path = _prepared_copy_path(uid)
-    if prepare_input_for_demucs(mp3_path, prep_path):
-        mp3_for_split = prep_path
-        print(f"[PREP] Using prepared audio at {prep_path}")
+    # Section 4: Performance Optimization - Fast Mode vs Enhanced Mode
+    # Fast Mode (Upload=OFF): Skip preprocessing except loudnorm
+    # Enhanced Mode (Upload=ON): Full preprocessing
+    upload_enabled = args.get("yt", False)
+    fast_mode = not upload_enabled
+    
+    if fast_mode:
+        print(f"[FAST MODE] Upload disabled - skipping preprocessing (except loudnorm)")
+        # Fast Mode: Only apply loudnorm, skip other preprocessing
+        prep_path = _prepared_copy_path(uid)
+        try:
+            # Minimal preprocessing: only loudness normalization
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", mp3_path,
+                "-af", "loudnorm=I=-14:TP=-2:LRA=11",
+                prep_path
+            ]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            if os.path.exists(prep_path) and os.path.getsize(prep_path) > 150_000:
+                mp3_for_split = prep_path
+                print(f"[FAST MODE] Applied loudnorm only: {prep_path}")
+            else:
+                mp3_for_split = mp3_path
+                print(f"[FAST MODE] Loudnorm failed, using original")
+        except Exception as e:
+            print(f"[FAST MODE] Loudnorm failed: {e}, using original")
+            mp3_for_split = mp3_path
     else:
-        mp3_for_split = mp3_path
-        print(f"[PREP] Using original audio (prep failed or skipped)")
+        # Enhanced Mode: Full preprocessing
+        prep_path = _prepared_copy_path(uid)
+        if prepare_input_for_demucs(mp3_path, prep_path):
+            mp3_for_split = prep_path
+            print(f"[ENHANCED MODE] Using prepared audio at {prep_path}")
+        else:
+            mp3_for_split = mp3_path
+            print(f"[ENHANCED MODE] Using original audio (prep failed or skipped)")
 
     # If cached validated stems exist (original or __prep basename), reuse first valid.
     cached_dir = None
@@ -269,7 +310,7 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
     prepared_base = os.path.splitext(os.path.basename(prep_path))[0]
     for model in FALLBACK_MODELS:
         for base_name in (original_base, prepared_base):
-            candidate = os.path.join("separated", model, base_name)
+            candidate = os.path.join("Separated", model, base_name)
             if os.path.exists(candidate):
                 v = validate_stems(candidate)
                 if v.get("ok"):
@@ -313,8 +354,10 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
     print(f"[TRACK] Fixed stem_base_path={fixed_sbp} | exists={os.path.isdir(fixed_sbp)} | CWD={os.getcwd()}")
 
     # Process each selected channel; on failure, print and continue
-    for channel_ui in selected_channels:
+    for idx, channel_ui in enumerate(selected_channels):
+        print(f"[CHANNEL_LOOP] Processing channel {idx+1}/{len(selected_channels)}: {channel_ui}")
         channel_key = UI_TO_CHANNEL_MAP.get(channel_ui, channel_ui)
+        print(f"[CHANNEL_LOOP] Mapped {channel_ui} -> {channel_key}")
         if channel_key not in CHANNEL_MODULE_MAP:
             print(f"[WARN] Unknown channel key: {channel_key} (from UI: {channel_ui}) — skipping")
             continue
@@ -336,8 +379,9 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
             progress = get_progress(session_id) or {}
             meta = progress.get("meta", {}) if progress else {}
             if progress:
-                progress["message"] = f" Uploading {channel_key.upper()}…"
-                meta["channel"] = channel_key
+                channel_display = CHANNEL_NAME_MAP.get(channel_key, channel_key)
+                progress["message"] = f" Uploading {channel_display}…"
+                meta["channel"] = channel_display
                 progress["meta"] = meta
                 set_progress(session_id, progress)
 
@@ -356,16 +400,21 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
             progress = get_progress(session_id) or {}
             meta = progress.get("meta", {})
             meta["completed"] = int(meta.get("completed", 0)) + 1
-            meta["channel"] = channel_key
+            channel_display = CHANNEL_NAME_MAP.get(channel_key, channel_key)
+            meta["channel"] = channel_display
             total = int(meta.get("total", 1))
             progress["meta"] = meta
             progress["percent"] = 46 + int((meta["completed"] / total) * 54)
-            progress["message"] = f" {channel_key.upper()} done"
+            progress["message"] = f" {channel_display} done"
             set_progress(session_id, progress)
 
         except Exception as e:
             traceback.print_exc()
             print(f"[ERROR] Channel processing error for {channel_key}: {e}")
+            print(f"[ERROR] Full traceback:")
+            import sys
+            exc_info = sys.exc_info()
+            traceback.print_exception(*exc_info)
             progress = get_progress(session_id) or {}
             progress["message"] = f" Error processing {channel_key.upper()} — continuing"
             set_progress(session_id, progress)
@@ -406,6 +455,7 @@ def process_all_tracks(
       - set args['start_jitter_sec']=(0.5, 2.0)
       - set args['per_track_cooldown_sec']=(20, 45) for large batches
     """
+    print(f"[BATCH] process_all_tracks called with selected_channels: {selected_channels}")
     semaphore = threading.Semaphore(max_concurrent)
 
     def run_with_semaphore(track_id, sess_id):
