@@ -239,7 +239,7 @@ class ContentBase:
             key_text = str(key).strip() if key else ""
             for stem_type in self.video_paths.keys():
                 display_stem = stem_type.replace("_", " ").title()
-                bracket_parts = [f"{bpm_str} BPM"]
+                bracket_parts = [f"BPM {bpm_str}"]
                 if stem_type.lower() != "drums" and key_text:
                     bracket_parts.append(key_text)
                 bracket = f"[{' '.join(part for part in bracket_parts if part)}]"
@@ -316,11 +316,21 @@ class ContentBase:
                     pass
         
         # Multi-stage search with priority order
+        # Clean artist and title for search (remove special characters that might break search)
+        clean_artist = artist.replace("$", "").replace("$$", "").strip()
+        clean_title = title.replace("$", "").replace("$$", "").strip()
+        
         search_terms = [
             f"{title} - {artist} topic",
+            f"{clean_title} - {clean_artist} topic",
             f"{title} - {artist} official audio",
+            f"{clean_title} - {clean_artist} official audio",
             f"{title} - {artist} album",
+            f"{clean_title} - {clean_artist} album",
             f"{title} - {artist}",
+            f"{clean_title} - {clean_artist}",
+            f"{artist} {title}",  # Alternative format
+            f"{clean_artist} {clean_title}",  # Alternative format without special chars
         ]
         
         # Reject patterns (music videos, live, unofficial)
@@ -337,7 +347,16 @@ class ContentBase:
         for search_term in search_terms:
             try:
                 results = YoutubeSearch(search_term, max_results=max_candidates).to_json()
-                videos = json.loads(results).get("videos", [])
+                # Handle case where to_json() might return an error string instead of JSON
+                if not results or not results.strip().startswith('{'):
+                    print(f" Warning: Invalid JSON response for search term '{search_term}': {results[:100]}")
+                    continue
+                try:
+                    videos = json.loads(results).get("videos", [])
+                except json.JSONDecodeError as json_err:
+                    print(f" JSON decode error for search term '{search_term}': {json_err}")
+                    print(f" Response preview: {results[:200]}")
+                    continue
                 
                 for video in videos:
                     video_title = video.get("title", "").lower()
@@ -429,15 +448,40 @@ class ContentBase:
                     # Use rapidfuzz directly for better control
                     from rapidfuzz import fuzz
                     
-                    # Fuzzy match both artist and title separately
-                    artist_score = fuzz.token_set_ratio(artist.lower(), info_uploader.lower()) if info_uploader else 0
-                    title_score = fuzz.token_set_ratio(title.lower(), info_title.lower()) if info_title else 0
+                    # Normalize strings for better matching (remove special chars, normalize spaces)
+                    def normalize_for_match(s):
+                        if not s:
+                            return ""
+                        # Remove special characters but keep spaces and hyphens
+                        import re
+                        s = re.sub(r'[^\w\s-]', '', s.lower())
+                        # Normalize multiple spaces to single space
+                        s = re.sub(r'\s+', ' ', s).strip()
+                        return s
                     
-                    # Stricter thresholds: require both artist AND title to match well
+                    # Fuzzy match both artist and title separately
+                    # Use normalized versions for better matching with special characters
+                    normalized_artist = normalize_for_match(artist)
+                    normalized_title = normalize_for_match(title)
+                    normalized_uploader = normalize_for_match(info_uploader) if info_uploader else ""
+                    normalized_info_title = normalize_for_match(info_title) if info_title else ""
+                    
+                    artist_score = fuzz.token_set_ratio(normalized_artist, normalized_uploader) if normalized_uploader else 0
+                    title_score = fuzz.token_set_ratio(normalized_title, normalized_info_title) if normalized_info_title else 0
+                    
+                    # Also try matching with original strings (in case normalization removes important info)
+                    artist_score_orig = fuzz.token_set_ratio(artist.lower(), info_uploader.lower()) if info_uploader else 0
+                    title_score_orig = fuzz.token_set_ratio(title.lower(), info_title.lower()) if info_title else 0
+                    
+                    # Use the better score from normalized or original
+                    artist_score = max(artist_score, artist_score_orig)
+                    title_score = max(title_score, title_score_orig)
+                    
+                    # More flexible thresholds: require both artist AND title to match well
                     # Allow slightly lower combined score if title is perfect (100%)
-                    min_artist_score = 70  # Slightly relaxed for artist variations
-                    min_title_score = 75   # Minimum title match
-                    min_combined_score = 82  # Slightly relaxed from 85
+                    min_artist_score = 65  # More relaxed for artist variations (handles aliases, special chars)
+                    min_title_score = 70   # More relaxed for title match (handles variations)
+                    min_combined_score = 75  # More relaxed combined score
                     combined_score = (artist_score + title_score) / 2
                     
                     # Track best candidate for fallback
@@ -446,8 +490,12 @@ class ContentBase:
                         best_fallback_score = combined_score
                     
                     # Special case: if title is perfect (100%), allow lower artist score
-                    if title_score >= 95 and combined_score >= 80:
+                    if title_score >= 95 and combined_score >= 75:
                         # Title is very close, allow lower artist match
+                        pass
+                    # Special case: if artist is perfect (100%), allow lower title score
+                    elif artist_score >= 95 and combined_score >= 75:
+                        # Artist is very close, allow lower title match
                         pass
                     elif artist_score < min_artist_score or title_score < min_title_score or combined_score < min_combined_score:
                         print(f" Fuzzy match too low: artist={artist_score:.1f}%, title={title_score:.1f}%, combined={combined_score:.1f}%")
@@ -585,7 +633,7 @@ class ContentBase:
             bpm = bpm or self.track_info.get("tempo", 0)
             key = key or self.track_info.get("key", "Unknown")
 
-            folder_title = self.sanitize_name(f"{artist} {title} [{bpm} BPM {key}]")
+            folder_title = self.sanitize_name(f"{artist} {title} [BPM {bpm} {key}]")
             thumb_dir = os.path.join("Thumbnails", folder_title)
             os.makedirs(thumb_dir, exist_ok=True)
 

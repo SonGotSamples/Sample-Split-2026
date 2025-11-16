@@ -232,9 +232,7 @@
     <div class="section-header">Options</div>
     <div class="checkbox-row">
       <label><input type="checkbox" id="monetize" /> Enable Monetization</label>
-      <label><input type="checkbox" id="uploadYouTube" checked /> Upload to YouTube</label>
-      <label><input type="checkbox" id="uploadTikTok" /> Upload to TikTok</label>
-      <label><input type="checkbox" id="renderVideos" /> Create MP4 Videos (even without upload)</label>
+      <label><input type="checkbox" id="uploadYouTube" checked /> Upload to Channel</label>
       <label><input type="checkbox" id="trimTrack" /> Trim Track</label>
     </div>
 
@@ -287,7 +285,7 @@ document.querySelectorAll(".stem-toggle").forEach(btn => {
       }
     }
     
-    // Auto-enable YouTube upload if any stems are selected
+    // Auto-enable channel upload if any stems are selected
     const anyActive = document.querySelectorAll(".stem-toggle.active").length > 0;
     if (anyActive) {
       document.getElementById("uploadYouTube").checked = true;
@@ -307,8 +305,8 @@ function runSplit() {
   const privacy = document.getElementById('privacy').value;
   const monetize = document.getElementById('monetize').checked;
   const uploadYouTube = document.getElementById('uploadYouTube').checked;
-  const uploadTikTok = document.getElementById('uploadTikTok').checked;
-  const renderVideos = document.getElementById('renderVideos').checked;
+  const uploadTikTok = false; // TikTok upload removed
+  const renderVideos = false; // MP4 without upload removed
   const trimTrack = document.getElementById('trimTrack').checked;
   const trimLength = parseInt(document.getElementById('trimLength').value) || 0;
   const madeForKids = document.getElementById('audienceKids').checked;
@@ -377,7 +375,22 @@ function runSplit() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   })
-    .then(res => res.json())
+    .then(async res => {
+      // Check if response is OK
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`Server error (${res.status}): ${errorText.substring(0, 200)}`);
+      }
+      
+      // Check if response is JSON
+      const contentType = res.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        const text = await res.text();
+        throw new Error(`Expected JSON but got: ${text.substring(0, 200)}`);
+      }
+      
+      return res.json();
+    })
     .then(data => {
       console.log("Response:", data);
       

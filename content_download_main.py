@@ -157,7 +157,7 @@ class Content_download_main(ContentBase):
         base = f"{artist_clean} - {title_clean} {stem_display}"
         
         # Build bracket content: [BPM Key] or [BPM] for drums
-        bracket_parts = [bpm]
+        bracket_parts = [f"BPM {bpm}"]
         if stem_type.lower() != "drums" and key and key != "Unknown":
             bracket_parts.append(key)
         
@@ -255,6 +255,18 @@ class Content_download_main(ContentBase):
                     branded_clip = ColorClip(
                         size=(1280, 720), color=(0, 0, 0), duration=audio_clip.duration
                     )
+            
+            # Ensure branding is applied even if add_intro_card didn't add it
+            # Add watermark and stem icon to the final clip
+            from branding_utils import add_watermark, add_stem_icon
+            if branded_clip:
+                watermarked = add_watermark(branded_clip, channel, audio_clip.duration)
+                if watermarked:
+                    branded_clip = watermarked
+                if stem_type:
+                    iconed = add_stem_icon(branded_clip, stem_type, audio_clip.duration)
+                    if iconed:
+                        branded_clip = iconed
 
             final_video = branded_clip.with_audio(audio_clip)
             print(f"   Writing MP4...")
@@ -462,12 +474,13 @@ class Content_download_main(ContentBase):
 
         # Build titles with artist, track name, stem type, and BPM/Key
         # Section 3: Drums = BPM only, others = BPM + Key
+        # BPM label comes before the number
         title_map = {
-            "acapella": f"{artist} - {title} Acapella [{bpm} BPM{(' ' + key_text) if key_text else ''}]",
-            "drums": f"{artist} - {title} Drums [{bpm} BPM]",
-            "bass": f"{artist} - {title} Bass [{bpm} BPM{(' ' + key_text) if key_text else ''}]",
-            "melody": f"{artist} - {title} Melody [{bpm} BPM{(' ' + key_text) if key_text else ''}]",
-            "instrumental": f"{artist} - {title} Instrumental [{bpm} BPM{(' ' + key_text) if key_text else ''}]",
+            "acapella": f"{artist} - {title} Acapella [BPM {bpm}{(' ' + key_text) if key_text else ''}]",
+            "drums": f"{artist} - {title} Drums [BPM {bpm}]",
+            "bass": f"{artist} - {title} Bass [BPM {bpm}{(' ' + key_text) if key_text else ''}]",
+            "melody": f"{artist} - {title} Melody [BPM {bpm}{(' ' + key_text) if key_text else ''}]",
+            "instrumental": f"{artist} - {title} Instrumental [BPM {bpm}{(' ' + key_text) if key_text else ''}]",
         }
 
         # Merge default tags with artist/title/stem types
@@ -553,7 +566,7 @@ class Content_download_main(ContentBase):
                     print(f" Skipping TikTok upload for {stem_type} — file not found")
                     continue
 
-                stem_title = f"{artist} - {title} {stem_type.title()} [{bpm} BPM{(' ' + key_text) if key_text else ''}]"
+                stem_title = f"{artist} - {title} {stem_type.title()} [BPM {bpm}{(' ' + key_text) if key_text else ''}]"
                 
                 print(f" [TikTok] Uploading {stem_type}...")
                 video_id = uploader.upload_video(
