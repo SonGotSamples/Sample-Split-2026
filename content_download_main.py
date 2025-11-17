@@ -356,9 +356,7 @@ class Content_download_main(ContentBase):
             try:
                 print(f"   Combining static image with audio using FFmpeg (maximum speed optimizations)...")
                 # Use FFmpeg to combine static image with audio - maximum speed optimizations
-                # -loop 1: loop the image
-                # -shortest: stop when audio ends
-                # -r 1: minimal frame rate (just to satisfy codec, but we only have 1 frame)
+                # Simplified command with only proven-fast options
                 cmd = [
                     "ffmpeg", "-y",
                     "-threads", "0",  # Use all available CPU threads
@@ -369,7 +367,6 @@ class Content_download_main(ContentBase):
                     "-preset", "ultrafast",  # Fastest encoding preset
                     "-tune", "stillimage",  # Optimize for static images
                     "-crf", "28",  # Higher CRF = lower quality but much faster (28 is acceptable for static images)
-                    "-x264opts", "keyint=1:min-keyint=1:scenecut=0:no-mbtree:no-weightb:no-mixed-refs:no-8x8dct:fast-pskip=2:me=dia:subme=0",  # Maximum speed options (me=dia and subme=0 are fastest)
                     "-g", "1",  # Minimal keyframes (1 per frame since static)
                     "-bf", "0",  # No B-frames (faster encoding)
                     "-refs", "1",  # Minimal reference frames
@@ -386,7 +383,10 @@ class Content_download_main(ContentBase):
                 # Capture stderr to help debug if it fails
                 result = subprocess.run(cmd, check=False, capture_output=True, text=True)
                 if result.returncode != 0:
-                    print(f"   FFmpeg error: {result.stderr[:500]}")  # Print first 500 chars of error
+                    # Print full error message
+                    error_msg = result.stderr if result.stderr else result.stdout
+                    print(f"   FFmpeg error (full):")
+                    print(error_msg)
                     raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
                 print(f" ✓ Video rendered: {out_path}")
                 return out_path
