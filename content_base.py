@@ -6,7 +6,6 @@ import time
 import requests
 from typing import Optional
 from yt_dlp import YoutubeDL
-from youtube_search import YoutubeSearch
 from spotipy import Spotify
 from spotipy.oauth2 import SpotifyClientCredentials
 try:
@@ -343,22 +342,33 @@ class ContentBase:
         candidates = []
         max_candidates = 10
         
-        # Search with multiple terms and collect candidates
+        # Search with multiple terms and collect candidates using yt-dlp
         for search_term in search_terms:
             try:
-                results = YoutubeSearch(search_term, max_results=max_candidates).to_json()
-                # Handle case where to_json() might return an error string instead of JSON
-                if not results or not results.strip().startswith('{'):
-                    print(f" Warning: Invalid JSON response for search term '{search_term}': {results[:100]}")
-                    continue
-                try:
-                    videos = json.loads(results).get("videos", [])
-                except json.JSONDecodeError as json_err:
-                    print(f" JSON decode error for search term '{search_term}': {json_err}")
-                    print(f" Response preview: {results[:200]}")
+                # Use yt-dlp to search YouTube
+                ydl_opts_search = {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "extract_flat": True,  # Don't download, just get metadata
+                    "default_search": "ytsearch",  # Search YouTube
+                    "max_downloads": max_candidates,  # Limit results
+                }
+                
+                with YoutubeDL(ydl_opts_search) as ydl:
+                    # yt-dlp search returns a list of video info dicts
+                    search_results = ydl.extract_info(f"ytsearch{max_candidates}:{search_term}", download=False)
+                    
+                if not search_results or "entries" not in search_results:
+                    print(f" No results found for search term: {search_term}")
                     continue
                 
-                for video in videos:
+                videos_list = search_results.get("entries", [])
+                if not videos_list:
+                    continue
+                
+                for video in videos_list:
+                    if not video:
+                        continue
                     video_title = video.get("title", "").lower()
                     video_id = video.get("id")
                     
@@ -380,7 +390,9 @@ class ContentBase:
                         "id": video_id,
                         "title": video.get("title", ""),
                         "priority": priority,
-                        "search_term": search_term
+                        "search_term": search_term,
+                        "duration": video.get("duration", 0),  # yt-dlp provides duration
+                        "uploader": video.get("uploader", "") or video.get("channel", ""),  # yt-dlp provides uploader
                     })
                     
                     if len(candidates) >= max_candidates:
@@ -407,7 +419,8 @@ class ContentBase:
             candidate_title = candidate["title"]
             
             try:
-                # Extract info without downloading first
+                # Extract full info without downloading first
+                # yt-dlp search with extract_flat might not have all fields, so we fetch full info
                 ydl_opts_info = {
                     "quiet": True,
                     "no_warnings": True,
