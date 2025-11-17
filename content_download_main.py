@@ -348,51 +348,104 @@ class Content_download_main(ContentBase):
             frame_image = branded_clip.get_frame(0)
             
             # Save frame as temporary PNG
-            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_img:
-                tmp_img_path = tmp_img.name
-                from PIL import Image
-                Image.fromarray(frame_image).save(tmp_img_path)
-            
+            tmp_img_path = None
             try:
-                print(f"   Combining static image with audio using FFmpeg (maximum speed optimizations)...")
-                # Use FFmpeg to combine static image with audio - maximum speed optimizations
-                # Simplified command with only proven-fast options
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-threads", "0",  # Use all available CPU threads
-                    "-loop", "1",  # Loop the static image
-                    "-i", tmp_img_path,  # Input image
-                    "-i", audio_path,  # Input audio
-                    "-c:v", "libx264",  # Video codec
-                    "-preset", "ultrafast",  # Fastest encoding preset
-                    "-tune", "stillimage",  # Optimize for static images
-                    "-crf", "28",  # Higher CRF = lower quality but much faster (28 is acceptable for static images)
-                    "-g", "1",  # Minimal keyframes (1 per frame since static)
-                    "-bf", "0",  # No B-frames (faster encoding)
-                    "-refs", "1",  # Minimal reference frames
-                    "-c:a", "aac",  # Audio codec
-                    "-b:a", "128k",  # Lower audio bitrate for faster encoding (still good quality)
-                    "-ar", "44100",  # Standard sample rate
-                    "-ac", "2",  # Stereo
-                    "-pix_fmt", "yuv420p",  # Pixel format for compatibility
-                    "-vsync", "0",  # Disable frame rate conversion (faster)
-                    "-shortest",  # Stop when audio ends
-                    "-r", "1",  # Minimal frame rate (1 fps, but only 1 frame looped)
-                    out_path
-                ]
-                # Capture stderr to help debug if it fails
-                result = subprocess.run(cmd, check=False, capture_output=True, text=True)
-                if result.returncode != 0:
-                    # Print full error message
-                    error_msg = result.stderr if result.stderr else result.stdout
-                    print(f"   FFmpeg error (full):")
-                    print(error_msg)
-                    raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
-                print(f" ✓ Video rendered: {out_path}")
-                return out_path
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_img:
+                    tmp_img_path = tmp_img.name
+                    from PIL import Image
+                    Image.fromarray(frame_image).save(tmp_img_path)
+                
+                # Try FFmpeg direct call first (faster), fall back to MoviePy if encoder not available
+                ffmpeg_success = False
+                encoders_to_try = ["libx264", "h264_nvenc", "h264_amf"]
+                
+                for encoder in encoders_to_try:
+                    try:
+                        print(f"   Combining static image with audio using FFmpeg ({encoder})...")
+                        # Use FFmpeg to combine static image with audio - maximum speed optimizations
+                        cmd = [
+                            "ffmpeg", "-y",
+                            "-threads", "0",  # Use all available CPU threads
+                            "-loop", "1",  # Loop the static image
+                            "-i", tmp_img_path,  # Input image
+                            "-i", audio_path,  # Input audio
+                            "-c:v", encoder,  # Video codec (try different encoders)
+                        ]
+                        
+                        # Add encoder-specific options
+                        if encoder == "libx264":
+                            cmd.extend([
+                                "-preset", "ultrafast",
+                                "-tune", "stillimage",
+                                "-crf", "28",
+                                "-g", "1",
+                                "-bf", "0",
+                                "-refs", "1",
+                            ])
+                        elif encoder == "h264_nvenc":
+                            cmd.extend([
+                                "-preset", "p1",  # Fastest NVENC preset
+                                "-tune", "ll",  # Low latency
+                                "-rc", "vbr",
+                                "-cq", "28",
+                            ])
+                        elif encoder == "h264_amf":
+                            cmd.extend([
+                                "-quality", "speed",
+                                "-rc", "vbr_peak",
+                                "-qmin", "18",
+                                "-qmax", "28",
+                            ])
+                        
+                        # Common audio options
+                        cmd.extend([
+                            "-c:a", "aac",
+                            "-b:a", "128k",
+                            "-ar", "44100",
+                            "-ac", "2",
+                            "-pix_fmt", "yuv420p",
+                            "-vsync", "0",
+                            "-shortest",
+                            "-r", "1",
+                            out_path
+                        ])
+                        
+                        # Capture stderr to help debug if it fails
+                        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+                        if result.returncode == 0:
+                            print(f" ✓ Video rendered with {encoder}: {out_path}")
+                            ffmpeg_success = True
+                            break
+                        else:
+                            error_msg = result.stderr if result.stderr else result.stdout
+                            if "Unknown encoder" in error_msg or "not found" in error_msg:
+                                print(f"   {encoder} not available, trying next encoder...")
+                                continue
+                            else:
+                                # Other error, show it but try next encoder
+                                print(f"   {encoder} failed: {error_msg[:200]}")
+                                continue
+                    except Exception as e:
+                        print(f"   {encoder} attempt failed: {e}")
+                        continue
+                
+                if not ffmpeg_success:
+                    # Fall back to MoviePy which will handle encoder selection automatically
+                    print(f"   FFmpeg direct call failed, falling back to MoviePy (slower but compatible)...")
+                    final_video = branded_clip.set_audio(audio_clip)
+                    final_video.write_videofile(
+                        out_path,
+                        codec=None,  # Let MoviePy choose the best available encoder
+                        audio_codec="aac",
+                        fps=1,  # Minimal FPS for static image
+                        preset="ultrafast",
+                        threads=0,  # Use all threads
+                        logger=None,  # Suppress verbose output
+                    )
+                    print(f" ✓ Video rendered with MoviePy: {out_path}")
             finally:
                 # Clean up temporary image
-                if os.path.exists(tmp_img_path):
+                if tmp_img_path and os.path.exists(tmp_img_path):
                     os.unlink(tmp_img_path)
         except Exception as exc:
             print(f" ✗ Failed to render {stem_type} video: {exc}")
