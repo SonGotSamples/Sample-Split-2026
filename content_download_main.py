@@ -432,7 +432,8 @@ class Content_download_main(ContentBase):
                 if not ffmpeg_success:
                     # Fall back to MoviePy which will handle encoder selection automatically
                     print(f"   FFmpeg direct call failed, falling back to MoviePy (slower but compatible)...")
-                    final_video = branded_clip.set_audio(audio_clip)
+                    # Use with_audio instead of set_audio (newer MoviePy API)
+                    final_video = branded_clip.with_audio(audio_clip)
                     final_video.write_videofile(
                         out_path,
                         codec=None,  # Let MoviePy choose the best available encoder
