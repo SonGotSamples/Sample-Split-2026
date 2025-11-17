@@ -302,8 +302,10 @@ def split_and_schedule(request: StemRequest):
         def run_full_pipeline():
             bpm_key_map = {}
 
+            # Fetch BPM/Key for all tracks (using fast Spotify API)
             for title, artist, track_id in batch:
-                bpm, key = get_bpm_key(title, artist, track_id)
+                # Pass Spotify client to get_bpm_key for faster Spotify-based lookup
+                bpm, key = get_bpm_key(title, artist, track_id, spotify_client=sp)
                 bpm_key_map[track_id] = (bpm, key)
 
             per_track_args = {}
