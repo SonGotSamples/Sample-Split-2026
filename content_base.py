@@ -704,17 +704,10 @@ class ContentBase:
             bpm = self.args.get("bpm") or self.args.get("track_info", {}).get("tempo", 0)
             key = self.args.get("key") or self.args.get("track_info", {}).get("key", "Unknown")
 
+            # Note: BPM/Key should be fetched via Tunebat in the pipeline
+            # Spotify audio_features API deprecated/requires approval, so not used here
             if not bpm or not key or key == "Unknown":
-                try:
-                    feat = self.sp.audio_features([track_id])[0]
-                    if not bpm:
-                        bpm = round(feat.get('tempo', 0))
-                    if not key or key == "Unknown":
-                        key_index = feat.get('key', 0)
-                        key_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-                        key = key_names[key_index] if 0 <= key_index < len(key_names) else key
-                except Exception as e:
-                    print(f" Spotify fallback failed: {e}")
+                print(f"⚠️ BPM/Key not provided - should be fetched via Tunebat in pipeline")
 
             # Get duration from Spotify track
             duration_seconds = track.get("duration_ms", 0) / 1000.0 if track.get("duration_ms") else None

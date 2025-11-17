@@ -69,8 +69,9 @@ class TunebatHelper:
 
     def fetch_bpm_key(self, track_name: str, artist_name: str, track_id: str, spotify_client=None) -> tuple:
         """
-        Section 6: Optimized BPM/Key fetch - uses Spotify audio_features as primary (fast),
-        falls back to Tunebat only if needed.
+        Fetch BPM/Key from Tunebat (primary source).
+        Spotify API requires full website app approval, so Tunebat is the easier alternative.
+        spotify_client parameter is kept for backward compatibility but ignored.
         """
         cache_key = self._get_cache_key(track_name, artist_name, track_id)
         
@@ -79,41 +80,7 @@ class TunebatHelper:
             print(f"💾 Cache hit: {artist_name} - {track_name} (BPM: {cached['bpm']}, Key: {cached['key']})")
             return cached['bpm'], cached['key']
         
-        # Try Spotify audio_features first (much faster and more reliable)
-        if spotify_client:
-            try:
-                print(f"🎵 Fetching BPM/Key from Spotify for {artist_name} - {track_name}...")
-                features = spotify_client.audio_features([track_id])
-                if features and features[0]:
-                    feat = features[0]
-                    bpm = round(feat.get('tempo', 0)) if feat.get('tempo') else 0
-                    key_index = feat.get('key', -1)
-                    mode = feat.get('mode', 0)  # 0 = minor, 1 = major
-                    
-                    if bpm > 0 and key_index >= 0:
-                        key_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-                        key_name = key_names[key_index] if 0 <= key_index < len(key_names) else "Unknown"
-                        # Add mode (minor/major)
-                        if mode == 0:
-                            key = f"{key_name} minor"
-                        else:
-                            key = f"{key_name} major"
-                        
-                        print(f"✅ Spotify: BPM={bpm}, Key={key}")
-                        
-                        # Cache the result
-                        self.cache[cache_key] = {
-                            "bpm": bpm,
-                            "key": key,
-                            "timestamp": time.time(),
-                            "source": "spotify"
-                        }
-                        self._save_cache()
-                        return bpm, key
-                    else:
-                        print(f"⚠️ Spotify audio_features incomplete, trying Tunebat...")
-            except Exception as e:
-                print(f"⚠️ Spotify fetch failed: {e}, trying Tunebat...")
+        # Use Tunebat as primary source (Spotify API deprecated/requires approval)
 
         def slugify(text):
             return text.strip().replace(" ", "-")
@@ -313,4 +280,8 @@ _helper = TunebatHelper()
 
 
 def get_bpm_key(track_name: str, artist_name: str, track_id: str, spotify_client=None) -> tuple[int, str]:
+    """
+    Get BPM and Key from Tunebat.
+    spotify_client parameter is kept for backward compatibility but ignored.
+    """
     return _helper.fetch_bpm_key(track_name, artist_name, track_id, spotify_client)
