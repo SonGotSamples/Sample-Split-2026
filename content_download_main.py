@@ -35,7 +35,7 @@ from mutagen.id3 import COMM, ID3, TIT2
 from mutagen.mp3 import MP3
 from pydub import AudioSegment
 
-from branding_utils import add_intro_card, apply_moviepy_resize, create_base_clip
+from branding_utils import add_intro_card, apply_moviepy_resize, create_base_clip, create_watermark_clip, create_stem_icon_clip
 from content_base import (
     ContentBase,
     DEFAULT_DESCRIPTION,
@@ -114,6 +114,10 @@ class Content_download_main(ContentBase):
         self._cached_base_clip: Optional[Any] = None
         self._cached_duration: Optional[float] = None
         self._cached_thumb_path: Optional[str] = None
+        # Cache for watermark clips (per channel)
+        self._cached_watermarks: Dict[str, Any] = {}  # key: channel
+        # Cache for icon clips (per stem type)
+        self._cached_icons: Dict[str, Any] = {}  # key: stem_type
 
     # ------------------------------------------------------------------
     # Progress helpers (same structure as other processors)
@@ -257,9 +261,38 @@ class Content_download_main(ContentBase):
                 if self._cached_base_clip.duration != duration:
                     self._cached_base_clip = self._cached_base_clip.with_duration(duration)
             
+            # Cache watermark clip (channel-specific, same for all stems of that channel)
+            if channel not in self._cached_watermarks:
+                print(f"   Creating watermark clip for channel: {channel}")
+                self._cached_watermarks[channel] = create_watermark_clip(channel, duration, 1280, 720)
+            else:
+                print(f"   Reusing cached watermark clip for channel: {channel}")
+                # Adjust duration if needed
+                cached_wm = self._cached_watermarks[channel]
+                if cached_wm and cached_wm.duration != duration:
+                    self._cached_watermarks[channel] = cached_wm.with_duration(duration)
+            
+            # Cache icon clip (stem-specific, same for all channels using that stem)
+            watermark_clip = self._cached_watermarks.get(channel)
+            icon_clip = None
+            if stem_type:
+                if stem_type not in self._cached_icons:
+                    print(f"   Creating icon clip for stem: {stem_type}")
+                    self._cached_icons[stem_type] = create_stem_icon_clip(stem_type, duration, 1280)
+                else:
+                    print(f"   Reusing cached icon clip for stem: {stem_type}")
+                    # Adjust duration if needed
+                    cached_icon = self._cached_icons[stem_type]
+                    if cached_icon and cached_icon.duration != duration:
+                        self._cached_icons[stem_type] = cached_icon.with_duration(duration)
+                icon_clip = self._cached_icons.get(stem_type)
+            
             # Section 2: Enhanced branding with watermark and stem icon
-            # Pass cached base clip to avoid recreating background + thumbnail
-            branded_clip = add_intro_card(duration, channel, thumb_path, stem_type, base_clip=self._cached_base_clip)
+            # Pass cached clips to avoid recreating them
+            branded_clip = add_intro_card(duration, channel, thumb_path, stem_type, 
+                                         base_clip=self._cached_base_clip,
+                                         watermark_clip=watermark_clip,
+                                         icon_clip=icon_clip)
             
             if not branded_clip:
                 # Fallback: create basic clip if add_intro_card fails
@@ -276,13 +309,15 @@ class Content_download_main(ContentBase):
                         [background, thumb_clip], size=(1280, 720)
                     )
                     
-                    # Add branding to fallback clip
+                    # Add branding to fallback clip (use cached clips if available)
                     from branding_utils import add_watermark, add_stem_icon
-                    watermarked = add_watermark(branded_clip, channel, audio_clip.duration)
+                    fallback_wm = self._cached_watermarks.get(channel)
+                    watermarked = add_watermark(branded_clip, channel, audio_clip.duration, watermark_clip=fallback_wm)
                     if watermarked:
                         branded_clip = watermarked
                     if stem_type:
-                        iconed = add_stem_icon(branded_clip, stem_type, audio_clip.duration)
+                        fallback_icon = self._cached_icons.get(stem_type)
+                        iconed = add_stem_icon(branded_clip, stem_type, audio_clip.duration, icon_clip=fallback_icon)
                         if iconed:
                             branded_clip = iconed
                 else:
@@ -291,13 +326,15 @@ class Content_download_main(ContentBase):
                         size=(1280, 720), color=(0, 0, 0), duration=audio_clip.duration
                     )
                     
-                    # Add branding to solid background
+                    # Add branding to solid background (use cached clips if available)
                     from branding_utils import add_watermark, add_stem_icon
-                    watermarked = add_watermark(branded_clip, channel, audio_clip.duration)
+                    fallback_wm = self._cached_watermarks.get(channel)
+                    watermarked = add_watermark(branded_clip, channel, audio_clip.duration, watermark_clip=fallback_wm)
                     if watermarked:
                         branded_clip = watermarked
                     if stem_type:
-                        iconed = add_stem_icon(branded_clip, stem_type, audio_clip.duration)
+                        fallback_icon = self._cached_icons.get(stem_type)
+                        iconed = add_stem_icon(branded_clip, stem_type, audio_clip.duration, icon_clip=fallback_icon)
                         if iconed:
                             branded_clip = iconed
 

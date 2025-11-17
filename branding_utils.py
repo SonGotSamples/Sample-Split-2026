@@ -150,49 +150,44 @@ def _get_stem_icon_path(stem_type: str) -> Optional[Path]:
         return icon_path
     return None
 
-def add_watermark(clip, channel: str, duration: float) -> Optional["CompositeVideoClip"]:
+def create_watermark_clip(channel: str, duration: float, clip_width: int = 1280, clip_height: int = 720) -> Optional["ImageClip"]:
     """
-    Section 2: Add SGS/SGS2 watermark to video clip.
-    Watermark appears on ALL channels and ALL uploads.
+    Create watermark clip that can be cached and reused.
+    Watermark is channel-specific but same for all stems of that channel.
+    
+    Args:
+        channel: Channel name
+        duration: Duration of the video in seconds
+        clip_width: Width of the target clip (for positioning)
+        clip_height: Height of the target clip (for positioning)
+        
+    Returns:
+        Positioned watermark clip, or None if unavailable
     """
     if not MOVIEPY_AVAILABLE:
         return None
     
     watermark_path = _get_watermark_path(channel)
     if not watermark_path:
-        # Only warn once per channel to avoid spam
-        if not hasattr(add_watermark, '_warned_channels'):
-            add_watermark._warned_channels = set()
-        if channel not in add_watermark._warned_channels:
-            print(f"⚠️ Watermark not found for channel: {channel}")
-            print(f"   Add watermark to: assets/sgs2_watermark.png (required) or assets/sgs_watermark.png (optional)")
-            print(f"   See assets/README.md for details")
-            add_watermark._warned_channels.add(channel)
         return None
     
     try:
         watermark = ImageClip(str(watermark_path)).with_duration(duration)
         
-        # Resize watermark while preserving aspect ratio to avoid distortion
-        # Target width: 200px, height will scale proportionally
-        # But cap height at 80px to ensure it fits nicely
+        # Resize watermark while preserving aspect ratio
         target_width = 200
         max_height = 80
         
-        # Calculate aspect ratio-preserving size
         original_w, original_h = watermark.w, watermark.h
         aspect_ratio = original_w / original_h
         
-        # Calculate new dimensions
         if original_w > original_h:
-            # Landscape: use width as base
             new_width = min(target_width, original_w)
             new_height = int(new_width / aspect_ratio)
             if new_height > max_height:
                 new_height = max_height
                 new_width = int(new_height * aspect_ratio)
         else:
-            # Portrait or square: use height as base
             new_height = min(max_height, original_h)
             new_width = int(new_height * aspect_ratio)
             if new_width > target_width:
@@ -201,46 +196,129 @@ def add_watermark(clip, channel: str, duration: float) -> Optional["CompositeVid
         
         watermark = apply_moviepy_resize(watermark, new_size=(new_width, new_height))
         
-        # Position: bottom-left with margin (20px from edges) - matches reference image
-        # Calculate position: (margin_x, height - watermark_height - margin_y)
+        # Position: bottom-left with margin
         margin_x, margin_y = 20, 20
-        watermark = watermark.with_position((margin_x, clip.h - watermark.h - margin_y))
+        watermark = watermark.with_position((margin_x, clip_height - watermark.h - margin_y))
         
-        return CompositeVideoClip([clip, watermark])
+        return watermark
+    except Exception as e:
+        print(f"Warning: Could not create watermark clip: {e}")
+        return None
+
+
+def add_watermark(clip, channel: str, duration: float, watermark_clip: Optional["ImageClip"] = None) -> Optional["CompositeVideoClip"]:
+    """
+    Section 2: Add SGS/SGS2 watermark to video clip.
+    Watermark appears on ALL channels and ALL uploads.
+    
+    Args:
+        clip: Base video clip to add watermark to
+        channel: Channel name
+        duration: Duration of the video in seconds
+        watermark_clip: Optional cached watermark clip to reuse
+    """
+    if not MOVIEPY_AVAILABLE:
+        return None
+    
+    # Use cached watermark clip if provided, otherwise create new one
+    if watermark_clip is None:
+        watermark_clip = create_watermark_clip(channel, duration, clip.w, clip.h)
+        if watermark_clip is None:
+            # Only warn once per channel to avoid spam
+            if not hasattr(add_watermark, '_warned_channels'):
+                add_watermark._warned_channels = set()
+            if channel not in add_watermark._warned_channels:
+                print(f"⚠️ Watermark not found for channel: {channel}")
+                print(f"   Add watermark to: assets/sgs2_watermark.png (required) or assets/sgs_watermark.png (optional)")
+                print(f"   See assets/README.md for details")
+                add_watermark._warned_channels.add(channel)
+            return None
+    
+    try:
+        # Adjust duration if needed
+        if watermark_clip.duration != duration:
+            watermark_clip = watermark_clip.with_duration(duration)
+        # Adjust position if clip size changed
+        if watermark_clip.pos[1] != (clip.h - watermark_clip.h - 20):
+            watermark_clip = watermark_clip.with_position((20, clip.h - watermark_clip.h - 20))
+        
+        return CompositeVideoClip([clip, watermark_clip])
     except Exception as e:
         print(f"Warning: Could not add watermark: {e}")
         return None
 
-def add_stem_icon(clip, stem_type: str, duration: float) -> Optional["CompositeVideoClip"]:
+def create_stem_icon_clip(stem_type: str, duration: float, clip_width: int = 1280) -> Optional["ImageClip"]:
     """
-    Section 2: Add stem icon to top-right of video.
-    Five icons: Acapella, Drums, Bass, Melody, Instrumental.
-    Must appear top-right consistently.
+    Create stem icon clip that can be cached and reused.
+    Icon is stem-specific but same for all channels using that stem.
+    
+    Args:
+        stem_type: Type of stem (e.g., "Acapella", "Drums")
+        duration: Duration of the video in seconds
+        clip_width: Width of the target clip (for positioning)
+        
+    Returns:
+        Positioned icon clip, or None if unavailable
     """
     if not MOVIEPY_AVAILABLE:
         return None
     
     icon_path = _get_stem_icon_path(stem_type)
     if not icon_path:
-        # Only warn once per stem type to avoid spam
-        if not hasattr(add_stem_icon, '_warned_stems'):
-            add_stem_icon._warned_stems = set()
-        if stem_type not in add_stem_icon._warned_stems:
-            print(f"⚠️ Stem icon not found for: {stem_type}")
-            print(f"   Add icon to: assets/icon_{stem_type.lower()}.png")
-            print(f"   See assets/README.md for details")
-            add_stem_icon._warned_stems.add(stem_type)
         return None
     
     try:
         icon = ImageClip(str(icon_path)).with_duration(duration)
-        # Resize icon (adjust size as needed)
+        # Resize icon
         icon = apply_moviepy_resize(icon, new_size=(80, 80))
-        # Position: top-right with margin (20px from edges)
+        # Position: top-right with margin
         margin_x, margin_y = 20, 20
-        icon = icon.with_position((clip.w - icon.w - margin_x, margin_y))
+        icon = icon.with_position((clip_width - icon.w - margin_x, margin_y))
         
-        return CompositeVideoClip([clip, icon])
+        return icon
+    except Exception as e:
+        print(f"Warning: Could not create stem icon clip: {e}")
+        return None
+
+
+def add_stem_icon(clip, stem_type: str, duration: float, icon_clip: Optional["ImageClip"] = None) -> Optional["CompositeVideoClip"]:
+    """
+    Section 2: Add stem icon to top-right of video.
+    Five icons: Acapella, Drums, Bass, Melody, Instrumental.
+    Must appear top-right consistently.
+    
+    Args:
+        clip: Base video clip to add icon to
+        stem_type: Type of stem (e.g., "Acapella", "Drums")
+        duration: Duration of the video in seconds
+        icon_clip: Optional cached icon clip to reuse
+    """
+    if not MOVIEPY_AVAILABLE:
+        return None
+    
+    # Use cached icon clip if provided, otherwise create new one
+    if icon_clip is None:
+        icon_clip = create_stem_icon_clip(stem_type, duration, clip.w)
+        if icon_clip is None:
+            # Only warn once per stem type to avoid spam
+            if not hasattr(add_stem_icon, '_warned_stems'):
+                add_stem_icon._warned_stems = set()
+            if stem_type not in add_stem_icon._warned_stems:
+                print(f"⚠️ Stem icon not found for: {stem_type}")
+                print(f"   Add icon to: assets/icon_{stem_type.lower()}.png")
+                print(f"   See assets/README.md for details")
+                add_stem_icon._warned_stems.add(stem_type)
+            return None
+    
+    try:
+        # Adjust duration if needed
+        if icon_clip.duration != duration:
+            icon_clip = icon_clip.with_duration(duration)
+        # Adjust position if clip size changed
+        if icon_clip.pos[0] != (clip.w - icon_clip.w - 20):
+            icon_clip = icon_clip.with_position((clip.w - icon_clip.w - 20, 20))
+        
+        return CompositeVideoClip([clip, icon_clip])
     except Exception as e:
         print(f"Warning: Could not add stem icon: {e}")
         return None
@@ -289,7 +367,7 @@ def create_base_clip(duration: float, thumb_path: Optional[str] = None) -> Optio
         return None
 
 
-def add_intro_card(duration: float, channel: str, thumb_path: Optional[str] = None, stem_type: str = "", base_clip: Optional[Union["CompositeVideoClip", "ColorClip"]] = None) -> Optional[Union["CompositeVideoClip", "ColorClip"]]:
+def add_intro_card(duration: float, channel: str, thumb_path: Optional[str] = None, stem_type: str = "", base_clip: Optional[Union["CompositeVideoClip", "ColorClip"]] = None, watermark_clip: Optional["ImageClip"] = None, icon_clip: Optional["ImageClip"] = None) -> Optional[Union["CompositeVideoClip", "ColorClip"]]:
     """
     Create an intro card for videos with branding.
     Section 2: Includes watermark and stem icon.
@@ -315,13 +393,15 @@ def add_intro_card(duration: float, channel: str, thumb_path: Optional[str] = No
                 return None
         
         # Section 2: Add watermark (on ALL channels)
-        watermarked = add_watermark(base_clip, channel, duration)
+        # Use cached watermark clip if provided
+        watermarked = add_watermark(base_clip, channel, duration, watermark_clip=watermark_clip)
         if watermarked:
             base_clip = watermarked
         
         # Section 2: Add stem icon (top-right)
         if stem_type:
-            iconed = add_stem_icon(base_clip, stem_type, duration)
+            # Use cached icon clip if provided
+            iconed = add_stem_icon(base_clip, stem_type, duration, icon_clip=icon_clip)
             if iconed:
                 base_clip = iconed
         
