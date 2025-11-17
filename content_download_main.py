@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
+import tempfile
 from typing import Any, Dict, List, Optional
 
 try:
@@ -338,23 +340,47 @@ class Content_download_main(ContentBase):
                         if iconed:
                             branded_clip = iconed
 
-            final_video = branded_clip.with_audio(audio_clip)
-            # For static images, use extremely low FPS (0.001) to dramatically speed up rendering
-            # Since nothing moves, 0.001 fps is fine and reduces frame processing by 24,000x vs 24fps
-            if not hasattr(final_video, 'fps') or final_video.fps is None:
-                final_video = final_video.with_fps(0.001)  # 0.001 fps for static images (extremely fast)
-            print(f"   Writing MP4 (static image, optimized for speed)...")
-            final_video.write_videofile(
-                out_path, 
-                codec="libx264", 
-                audio_codec="aac", 
-                fps=0.001,  # Extremely low FPS for static images (24,000x fewer frames to process)
-                preset="ultrafast",  # Fastest encoding preset
-                threads=4,  # Use multiple threads
-                logger=None  # Disable verbose logging for speed
-            )
-            print(f" ✓ Video rendered: {out_path}")
-            return out_path
+            # For static images, use FFmpeg directly - no frame processing needed!
+            # Extract a single frame from the composite clip and combine with audio using FFmpeg
+            print(f"   Creating static image frame...")
+            
+            # Get a single frame at t=0 (static image, so any frame is the same)
+            frame_image = branded_clip.get_frame(0)
+            
+            # Save frame as temporary PNG
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_img:
+                tmp_img_path = tmp_img.name
+                from PIL import Image
+                Image.fromarray(frame_image).save(tmp_img_path)
+            
+            try:
+                print(f"   Combining static image with audio using FFmpeg (no frame processing)...")
+                # Use FFmpeg to combine static image with audio - much faster than MoviePy frame processing
+                # -loop 1: loop the image
+                # -shortest: stop when audio ends
+                # -r 1: minimal frame rate (just to satisfy codec, but we only have 1 frame)
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-loop", "1",  # Loop the static image
+                    "-i", tmp_img_path,  # Input image
+                    "-i", audio_path,  # Input audio
+                    "-c:v", "libx264",  # Video codec
+                    "-tune", "stillimage",  # Optimize for static images
+                    "-preset", "ultrafast",  # Fastest encoding
+                    "-c:a", "aac",  # Audio codec
+                    "-b:a", "192k",  # Audio bitrate
+                    "-pix_fmt", "yuv420p",  # Pixel format for compatibility
+                    "-shortest",  # Stop when audio ends
+                    "-r", "1",  # Minimal frame rate (1 fps, but only 1 frame looped)
+                    out_path
+                ]
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                print(f" ✓ Video rendered: {out_path}")
+                return out_path
+            finally:
+                # Clean up temporary image
+                if os.path.exists(tmp_img_path):
+                    os.unlink(tmp_img_path)
         except Exception as exc:
             print(f" ✗ Failed to render {stem_type} video: {exc}")
             import traceback
