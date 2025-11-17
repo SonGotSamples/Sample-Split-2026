@@ -4,34 +4,29 @@ import re
 import json
 import time
 import requests
-from typing import Optional, Dict, List, Any
+from typing import Optional
 from yt_dlp import YoutubeDL
+from youtube_search import YoutubeSearch
 from spotipy import Spotify
 from spotipy.oauth2 import SpotifyClientCredentials
-try:
-    from upload_ec2 import Uploader
-except ModuleNotFoundError:
-    Uploader = None
-
+from upload_ec2 import Uploader
 from shared_state import get_progress, set_progress
 from dotenv import load_dotenv
 from yt_video_multi import upload_all_stems
 from concurrent.futures import ThreadPoolExecutor
-from fuzzy_matcher import FuzzyMatcher
 
-#  Channel name map (maps channel keys to display names for folder structure)
+# ✅ Channel name map
 CHANNEL_NAME_MAP = {
-    "main_channel": "Main",
-    "sgs_2": "SGS 2",
-    "son_got_drums": "Drum",
-    "son_got_acapellas": "Acappella",
+    "son_got_acappellas": "Son Got Acappellas",
+    "son_got_drums": "Son Got Drums",
+    "main_channel": "Main Channel",
     "sample_split": "Sample Split",
-    "tiktok_channel": "Tik Tok",
+    "sgs_2": "SGS 2"
 }
 
 load_dotenv()
 
-#  Simplified YouTube auth setup
+# ✅ Simplified YouTube auth setup
 YT_TOKEN_PATH = os.path.join("yt_tokens", "main_v2.json")
 CLIENT_SECRETS_PATH = YT_TOKEN_PATH  # Same file used for both client secret and refresh token
 
@@ -67,6 +62,7 @@ GENRE_SLUG_MAP = {
     "world": "World",
     "other": "Other",
 }
+
 
 def normalize_genre(value: Optional[str], default: str = "Other") -> str:
     if not value:
@@ -107,24 +103,20 @@ class ContentBase:
         self.trim_length = args.get("trim_length", 72)
 
         self.universal_id = args.get("universal_id")
-        # Use htdemucs_ft (high-quality) as default stem path
-        # Falls back to htdemucs_6s or htdemucs if htdemucs_ft unavailable
         self.stem_base_path = args.get("stem_base_path") or (
-            os.path.join("Separated", "htdemucs_ft", self.universal_id) if self.universal_id else ""
+            os.path.join("separated", "htdemucs_6s", self.universal_id) if self.universal_id else ""
         )
 
         self.selected_genre = normalize_genre(args.get("genre"))
         self.genre_folder = self._sanitize_folder_name(self.selected_genre)
         self.video_paths = {}
 
-        # Initialization messages suppressed for cleaner output
+        print(f"\n📥 ContentBase initialized with session_id: {self.session_id}")
+        print(f"🔎 Received BPM: {args.get('bpm')} | Key: {args.get('key')}")
+        print(f"📦 Track info present: {'Yes' if self.track_info else 'No'}\n")
 
-        self.CLIENT_ID = args.get("client_id") or os.getenv("SPOTIFY_CLIENT_ID")
-        self.CLIENT_SECRET = args.get("client_secret") or os.getenv("SPOTIFY_CLIENT_SECRET")
-        
-        if not self.CLIENT_ID or not self.CLIENT_SECRET:
-            raise ValueError("Spotify credentials missing: provide client_id and client_secret")
-        
+        self.CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+        self.CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
         self.sp = Spotify(auth_manager=SpotifyClientCredentials(
             client_id=self.CLIENT_ID,
             client_secret=self.CLIENT_SECRET
@@ -178,7 +170,7 @@ class ContentBase:
             "percent": percent,
             "meta": enriched_meta
         })
-        # Progress update suppressed
+        print(f"[UPDATE] {self.session_id} → {message} ({percent}%)")
 
     def mark_step_complete(self, message: str, extra_meta: dict = None):
         progress = get_progress(self.session_id)
@@ -208,7 +200,7 @@ class ContentBase:
             "percent": percent,
             "meta": enriched_meta
         })
-        # Step complete
+        print(f"[DONE] {self.session_id}: {percent}% ({completed}/{total}) → {message}")
 
     def progress_with_meta(self, message: str, step: int, total: int, stem: str, channel: str, track: dict):
         meta = self.build_meta(stem, channel, track)
@@ -222,7 +214,7 @@ class ContentBase:
         meta = self.build_meta(stem, channel, track)
         self.mark_step_complete(message, meta)
 
-    # FIXED VERSION: Proper indentation + structure
+    # ✅ FIXED VERSION: Proper indentation + structure
     def upload_batch_to_youtube(self, track):
         try:
             artist = track.get("artist")
@@ -236,7 +228,7 @@ class ContentBase:
             key_text = str(key).strip() if key else ""
             for stem_type in self.video_paths.keys():
                 display_stem = stem_type.replace("_", " ").title()
-                bracket_parts = [f"BPM {bpm_str}"]
+                bracket_parts = [f"{bpm_str} BPM"]
                 if stem_type.lower() != "drums" and key_text:
                     bracket_parts.append(key_text)
                 bracket = f"[{' '.join(part for part in bracket_parts if part)}]"
@@ -249,8 +241,8 @@ class ContentBase:
             upload_all_stems(
                 stem_files=self.video_paths,         # stem_type -> mp4 path
                 title_map=title_map,                 # custom titles
-                description=DEFAULT_DESCRIPTION,     # your constant
-                tags=DEFAULT_TAGS,                   # your constant
+                description=DEFAULT_DESCRIPTION,     # ✅ your constant
+                tags=DEFAULT_TAGS,                   # ✅ your constant
                 category_id="10",
                 playlist=None,
                 privacy=self.args.get("privacy", "private"),
@@ -265,215 +257,99 @@ class ContentBase:
                 artist_file_map=None
             )
 
-            self.update_progress(" All stem videos uploaded", {"artist": artist})
+            self.update_progress("✅ All stem videos uploaded", {"artist": artist})
 
         except Exception as e:
-            self.update_progress(f" Batch upload failed: {e}", {"artist": track.get("artist")})
+            self.update_progress(f"❌ Batch upload failed: {e}", {"artist": track.get("artist")})
 
     def upload_to_youtube(self, stem_type, video_path, title, track):
         try:
             if stem_type and video_path:
                 self.video_paths[stem_type] = video_path
         except Exception as e:
-            self.update_progress(f"load tracking failed: {e}", {"stem": stem_type})
+            self.update_progress(f"❌ Upload tracking failed: {e}", {"stem": stem_type})
 
     def upload_to_ec2_if_needed(self, local_path):
         if self.args.get("ec2"):
             try:
-                self.update_progress(" Uploading to EC2...", {"path": local_path})
+                self.update_progress("📡 Uploading to EC2...", {"path": local_path})
                 uploader = Uploader()
                 uploader.upload_to_ec2(local_path)
-                self.update_progress(" Upload to EC2 complete", {"path": local_path})
+                self.update_progress("✅ Upload to EC2 complete", {"path": local_path})
             except Exception as e:
-                self.update_progress(f" EC2 upload failed: {e}", {"path": local_path})
+                self.update_progress(f"❌ EC2 upload failed: {e}", {"path": local_path})
 
     def download_audio(self, title, artist):
-        """
-        Download audio using direct YouTube search strategy:
-        1. Search YouTube directly with focused queries
-        2. Filter to Topic channels only
-        3. Fuzzy match track to video
-        4. Download matched video
-        """
-        from mutagen.mp3 import MP3 as MutagenMP3
-        from fuzzy_matcher import find_best_topic_video_for_track
-        
-        # Get official duration from track info
-        official_duration = None
-        if self.track_info:
-            official_duration = self.track_info.get("duration_seconds")
-            if not official_duration:
-                try:
-                    track_id = self.track_info.get("id")
-                    if track_id:
-                        track = self.sp.track(track_id)
-                        official_duration = track.get("duration_ms", 0) / 1000.0
-                except Exception:
-                    pass
-        
-        if official_duration:
-            print(f" Official duration from Spotify: {official_duration:.1f}s")
-        
-        # Get BPM and key from track info if available (from Tunebat)
-        bpm = self.track_info.get("tempo") if self.track_info else None
-        key = self.track_info.get("key") if self.track_info else None
-        
-        if bpm and bpm > 0:
-            print(f" Using BPM from Tunebat: {bpm}")
-        if key and key != "Unknown":
-            print(f" Using Key from Tunebat: {key}")
-        
-        # Step 1: Search YouTube and find best video match
-        # Fuzzy matching uses: title + artist + duration + BPM + key
-        match_id, score = find_best_topic_video_for_track(
-            title=title,
-            artist=artist,
-            duration_seconds=official_duration,
-            bpm=bpm,
-            key=key,
-            max_results=25,
-        )
-        
-        if not match_id:
-            print(f" No matching video found (best score: {score:.1f}%)")
-            return None, None
-        
-        print(f" Matched video: {match_id} (score: {score:.1f}%)")
-        
-        # Step 2: Download matched video
+        search_term = f"{title} - {artist} topic"
         try:
-            ydl_opts_info = {
-                "quiet": True,
-                "no_warnings": True,
-                "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
-            }
-            
-            with YoutubeDL(ydl_opts_info) as ydl:
-                info = ydl.extract_info(match_id, download=False)
-            
-            # Verify duration if available
-            if official_duration and info.get("duration"):
-                candidate_duration = info.get("duration")
-                duration_diff = abs(candidate_duration - official_duration)
-                base_tolerance = max(2.0, official_duration * 0.05)
-                if official_duration > 240:
-                    max_tolerance = min(max(base_tolerance, official_duration * 0.20), 60.0)
-                elif official_duration > 180:
-                    max_tolerance = min(max(base_tolerance, official_duration * 0.18), 50.0)
-                else:
-                    max_tolerance = min(base_tolerance, 10.0)
-                
-                if duration_diff > max_tolerance:
-                    print(f" Duration mismatch: {candidate_duration:.1f}s vs {official_duration:.1f}s (diff: {duration_diff:.1f}s, tolerance: {max_tolerance:.1f}s)")
-                    return None, None
-            
-            # Download video
-            print(f" Downloading: {info.get('title', 'Unknown')}")
+            results = YoutubeSearch(search_term, max_results=1).to_json()
+            video_id = json.loads(results)["videos"][0]["id"]
+        except Exception as e:
+            print("❌ YouTube search failed:", e)
+            return None, None
+
+        try:
             os.makedirs("MP3", exist_ok=True)
             ydl_opts = {
-                "quiet": True,
-                "no_warnings": True,
                 "format": "bestaudio/best",
                 "outtmpl": "%(uploader)s - %(id)s.%(ext)s",
-                "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
                 "postprocessors": [{
                     "key": "FFmpegExtractAudio",
                     "preferredcodec": "mp3",
                     "preferredquality": "192"
                 }]
             }
-            
+
             with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_id, download=False)
                 uid = f"{info['uploader']} - {info['id']}"
                 temp_mp3 = f"{uid}.mp3"
                 final_path = f"MP3/{uid}.mp3"
-                
-                ydl.download([match_id])
-                
+
+                ydl.download([video_id])
+
                 if os.path.exists(temp_mp3):
-                    # Verify downloaded file duration
-                    if official_duration:
-                        try:
-                            audio = MutagenMP3(temp_mp3)
-                            downloaded_duration = audio.info.length
-                            duration_diff = abs(downloaded_duration - official_duration)
-                            base_tolerance = max(2.0, official_duration * 0.05)
-                            if official_duration > 240:
-                                max_tolerance = min(max(base_tolerance, official_duration * 0.20), 60.0)
-                            elif official_duration > 180:
-                                max_tolerance = min(max(base_tolerance, official_duration * 0.18), 50.0)
-                            else:
-                                max_tolerance = min(base_tolerance, 10.0)
-                            if duration_diff > max_tolerance:
-                                print(f" Downloaded file duration mismatch: {downloaded_duration:.1f}s vs {official_duration:.1f}s")
-                                os.remove(temp_mp3)
-                                return None, None
-                        except Exception:
-                            pass
-                    
                     os.rename(temp_mp3, final_path)
-                    print(f" ✓ Downloaded: {info.get('title', 'Unknown')}")
                     return uid, final_path
                 else:
-                    print(f" MP3 not found after download: {temp_mp3}")
+                    print(f"❌ MP3 not found after download: {temp_mp3}")
                     return None, None
-                    
         except Exception as e:
-            print(f" Download failed: {e}")
-            import traceback
-            traceback.print_exc()
+            print("❌ YouTube download failed:", e)
             return None, None
 
     def download_thumbnail(self, url, artist=None, title=None, bpm=None, key=None):
         try:
-            if not url:
-                print(" Thumbnail URL is None/empty")
-                return None
-                
             artist = artist or self.track_info.get("artist", "Unknown")
             title = title or self.track_info.get("name", "Unknown")
             bpm = bpm or self.track_info.get("tempo", 0)
             key = key or self.track_info.get("key", "Unknown")
 
-            folder_title = self.sanitize_name(f"{artist} {title} [BPM {bpm} {key}]")
+            folder_title = self.sanitize_name(f"{artist} {title} [{bpm} BPM {key}]")
             thumb_dir = os.path.join("Thumbnails", folder_title)
             os.makedirs(thumb_dir, exist_ok=True)
 
             thumb_path = os.path.join(thumb_dir, "cover.png")
 
             if os.path.exists(thumb_path):
-                print(f"usng cached thumbnail: {thumb_path}")
                 return thumb_path
 
-            print(f" Downloading thumbnail from: {url}")
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            
+            data = requests.get(url).content
             with open(thumb_path, "wb") as f:
-                f.write(response.content)
+                f.write(data)
 
-            print(f" Thumbnail saved: {thumb_path}")
             return thumb_path
         except Exception as e:
-            print(f" Thumbnail download failed: {e} (URL: {url})")
+            print("❌ Thumbnail download failed:", e)
             return None
 
     def get_track_info(self, track_id):
         if self.track_info:
-            # Using cached track info
+            print(f"[CACHE] Reusing track info for {self.session_id}")
             return self.track_info
 
         try:
-            # Suppress spotipy HTTP error logging for 404s
-            import logging
-            spotipy_logger = logging.getLogger("spotipy")
-            original_level = spotipy_logger.level
-            spotipy_logger.setLevel(logging.CRITICAL)  # Suppress ERROR level
-            
-            try:
-                track = self.sp.track(track_id)
-            finally:
-                spotipy_logger.setLevel(original_level)  # Restore original level
+            track = self.sp.track(track_id)
             artist = track['artists'][0]['name']
             title = track['name']
             album_images = track["album"]["images"]
@@ -485,12 +361,18 @@ class ContentBase:
             bpm = self.args.get("bpm") or self.args.get("track_info", {}).get("tempo", 0)
             key = self.args.get("key") or self.args.get("track_info", {}).get("key", "Unknown")
 
-            # Note: BPM/Key are fetched from Tunebat in dispatch_stem_processing
-            # Tunebat provides official BPM/Key data matching their website
+            if not bpm or not key or key == "Unknown":
+                try:
+                    feat = self.sp.audio_features([track_id])[0]
+                    if not bpm:
+                        bpm = round(feat.get('tempo', 0))
+                    if not key or key == "Unknown":
+                        key_index = feat.get('key', 0)
+                        key_names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+                        key = key_names[key_index] if 0 <= key_index < len(key_names) else key
+                except Exception as e:
+                    print(f"⚠️ Spotify fallback failed: {e}")
 
-            # Get duration from Spotify track
-            duration_seconds = track.get("duration_ms", 0) / 1000.0 if track.get("duration_ms") else None
-            
             track_info = {
                 "name": title,
                 "artist": artist,
@@ -500,22 +382,15 @@ class ContentBase:
                 "popularity": track["popularity"],
                 "img": img_url,
                 "tempo": bpm,
-                "key": key,
-                "duration_seconds": duration_seconds,
-                "id": track_id
+                "key": key
             }
 
             self.track_info = track_info
-            # Final track info message suppressed for cleaner output
+            print(f"🎯 Final track info: BPM={track_info.get('tempo')} | Key={track_info.get('key')}\n")
             return track_info
 
         except Exception as e:
-            # Suppress 404 errors (track not found) - don't spam console
-            error_str = str(e).lower()
-            if "404" in error_str or "not found" in error_str or "resource not found" in error_str:
-                print(f" Track not found: {track_id} (skipping)")
-            else:
-                print(f" Track info error: {e}")
+            print(f"❌ Track info error: {e}")
             return None
 
     def trim_audio(self, path: str, duration: int) -> str:
@@ -526,7 +401,7 @@ class ContentBase:
             trimmed.export(path, format="mp3")
             return path
         except Exception as e:
-            print(f" Failed to trim audio: {e}")
+            print(f"❌ Failed to trim audio: {e}")
             return path
 
     def stems_already_exist(self):
