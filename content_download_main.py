@@ -236,8 +236,11 @@ class Content_download_main(ContentBase):
             print(f"   Duration: {audio_clip.duration}s")
             
             # Section 2: Enhanced branding with watermark and stem icon
+            # add_intro_card already includes: background, thumbnail, watermark, and stem icon
             branded_clip = add_intro_card(audio_clip.duration, channel, thumb_path, stem_type)
+            
             if not branded_clip:
+                # Fallback: create basic clip if add_intro_card fails
                 thumb = thumb_path if thumb_path and os.path.exists(thumb_path) else None
                 if thumb:
                     print(f"   Using thumbnail: {thumb}")
@@ -250,23 +253,31 @@ class Content_download_main(ContentBase):
                     branded_clip = CompositeVideoClip(
                         [background, thumb_clip], size=(1280, 720)
                     )
+                    
+                    # Add branding to fallback clip
+                    from branding_utils import add_watermark, add_stem_icon
+                    watermarked = add_watermark(branded_clip, channel, audio_clip.duration)
+                    if watermarked:
+                        branded_clip = watermarked
+                    if stem_type:
+                        iconed = add_stem_icon(branded_clip, stem_type, audio_clip.duration)
+                        if iconed:
+                            branded_clip = iconed
                 else:
                     print(f"   No thumbnail, using solid background")
                     branded_clip = ColorClip(
                         size=(1280, 720), color=(0, 0, 0), duration=audio_clip.duration
                     )
-            
-            # Ensure branding is applied even if add_intro_card didn't add it
-            # Add watermark and stem icon to the final clip
-            from branding_utils import add_watermark, add_stem_icon
-            if branded_clip:
-                watermarked = add_watermark(branded_clip, channel, audio_clip.duration)
-                if watermarked:
-                    branded_clip = watermarked
-                if stem_type:
-                    iconed = add_stem_icon(branded_clip, stem_type, audio_clip.duration)
-                    if iconed:
-                        branded_clip = iconed
+                    
+                    # Add branding to solid background
+                    from branding_utils import add_watermark, add_stem_icon
+                    watermarked = add_watermark(branded_clip, channel, audio_clip.duration)
+                    if watermarked:
+                        branded_clip = watermarked
+                    if stem_type:
+                        iconed = add_stem_icon(branded_clip, stem_type, audio_clip.duration)
+                        if iconed:
+                            branded_clip = iconed
 
             final_video = branded_clip.with_audio(audio_clip)
             print(f"   Writing MP4...")
