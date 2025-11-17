@@ -281,7 +281,7 @@ class Content_download_main(ContentBase):
 
             final_video = branded_clip.with_audio(audio_clip)
             print(f"   Writing MP4...")
-            final_video.write_videofile(out_path, fps=1, codec="libx264", audio_codec="aac")
+            final_video.write_videofile(out_path, codec="libx264", audio_codec="aac")
             print(f" ✓ Video rendered: {out_path}")
             return out_path
         except Exception as exc:
