@@ -19,61 +19,62 @@ except ImportError:
     MOVIEPY_AVAILABLE = False
     ColorClip = CompositeVideoClip = ImageClip = TextClip = None
 
-# Section 2: Branding asset paths (files directly in assets/ directory)
-BRANDING_ASSETS_DIR = Path("assets")
+# Section 2: Branding asset paths (files in assets/assets/ directory)
+BRANDING_ASSETS_DIR = Path("assets/assets")
 
 # Watermark/label paths - map channels to label files
-# Files should be directly in assets/ directory
-# - Main channel: SGS (sgs.png or sgs_watermark.png)
-# - Backup channel: SGS 2 (sgs_2.png or sgs2_watermark.png)
+# Files are in assets/assets/label/ directory
+# - Main channel: SGS (sgs.png)
+# - Backup channel: SGS 2 (sgs_2.png)
 # - Acapella channel: Son Got Acapellas (son_got_acappellas.png)
 # - Drum channel: Son Got Drums (son_got_drums.png)
 # - Sample Split channel: Sample Split (sample_split.png)
 WATERMARK_PATHS = {
     # Main channel variations - uses SGS watermark
-    "main": BRANDING_ASSETS_DIR / "sgs_watermark.png",
-    "main_channel": BRANDING_ASSETS_DIR / "sgs_watermark.png",
-    "mainchannel": BRANDING_ASSETS_DIR / "sgs_watermark.png",
+    "main": BRANDING_ASSETS_DIR / "label" / "sgs.png",
+    "Main": BRANDING_ASSETS_DIR / "label" / "sgs.png",  # Capital M variant
+    "main_channel": BRANDING_ASSETS_DIR / "label" / "sgs.png",
+    "mainchannel": BRANDING_ASSETS_DIR / "label" / "sgs.png",
     
     # Backup/SGS2 channel - uses SGS 2 watermark
-    "back up": BRANDING_ASSETS_DIR / "sgs2_watermark.png",
-    "backup": BRANDING_ASSETS_DIR / "sgs2_watermark.png",
-    "sgs_2": BRANDING_ASSETS_DIR / "sgs2_watermark.png",
-    "sgs2": BRANDING_ASSETS_DIR / "sgs2_watermark.png",
+    "back up": BRANDING_ASSETS_DIR / "label" / "sgs_2.png",
+    "backup": BRANDING_ASSETS_DIR / "label" / "sgs_2.png",
+    "sgs_2": BRANDING_ASSETS_DIR / "label" / "sgs_2.png",
+    "sgs2": BRANDING_ASSETS_DIR / "label" / "sgs_2.png",
     
     # Drums channel - uses Son Got Drums watermark
-    "drum": BRANDING_ASSETS_DIR / "son_got_drums.png",
-    "drums": BRANDING_ASSETS_DIR / "son_got_drums.png",
-    "son_got_drums": BRANDING_ASSETS_DIR / "son_got_drums.png",
-    "songotdrums": BRANDING_ASSETS_DIR / "son_got_drums.png",
+    "drum": BRANDING_ASSETS_DIR / "label" / "son_got_drums.png",
+    "drums": BRANDING_ASSETS_DIR / "label" / "son_got_drums.png",
+    "son_got_drums": BRANDING_ASSETS_DIR / "label" / "son_got_drums.png",
+    "songotdrums": BRANDING_ASSETS_DIR / "label" / "son_got_drums.png",
     
     # Vocal/Acapella channel - uses Son Got Acapellas watermark
-    "vocal": BRANDING_ASSETS_DIR / "son_got_acappellas.png",
-    "vocals": BRANDING_ASSETS_DIR / "son_got_acappellas.png",
-    "son_got_acapellas": BRANDING_ASSETS_DIR / "son_got_acappellas.png",
-    "son_got_acappellas": BRANDING_ASSETS_DIR / "son_got_acappellas.png",
-    "songotacapellas": BRANDING_ASSETS_DIR / "son_got_acappellas.png",
+    "vocal": BRANDING_ASSETS_DIR / "label" / "son_got_acappellas.png",
+    "vocals": BRANDING_ASSETS_DIR / "label" / "son_got_acappellas.png",
+    "son_got_acapellas": BRANDING_ASSETS_DIR / "label" / "son_got_acappellas.png",
+    "son_got_acappellas": BRANDING_ASSETS_DIR / "label" / "son_got_acappellas.png",
+    "songotacapellas": BRANDING_ASSETS_DIR / "label" / "son_got_acappellas.png",
     
     # Sample Split channel - uses Sample Split watermark
-    "sample split": BRANDING_ASSETS_DIR / "sample_split.png",
-    "sample_split": BRANDING_ASSETS_DIR / "sample_split.png",
-    "samplesplit": BRANDING_ASSETS_DIR / "sample_split.png",
+    "sample split": BRANDING_ASSETS_DIR / "label" / "sample_split.png",
+    "sample_split": BRANDING_ASSETS_DIR / "label" / "sample_split.png",
+    "samplesplit": BRANDING_ASSETS_DIR / "label" / "sample_split.png",
     
     # TikTok channel - uses TikTok watermark
-    "tiktok": BRANDING_ASSETS_DIR / "tik_tok.png",
-    "tiktok_channel": BRANDING_ASSETS_DIR / "tik_tok.png",
-    "tik tok": BRANDING_ASSETS_DIR / "tik_tok.png",
-    "tiktokchannel": BRANDING_ASSETS_DIR / "tik_tok.png",
+    "tiktok": BRANDING_ASSETS_DIR / "label" / "tik_tok.png",
+    "tiktok_channel": BRANDING_ASSETS_DIR / "label" / "tik_tok.png",
+    "tik tok": BRANDING_ASSETS_DIR / "label" / "tik_tok.png",
+    "tiktokchannel": BRANDING_ASSETS_DIR / "label" / "tik_tok.png",
 }
 
 # Stem icon paths - map stem types to icon files
-# Files should be directly in assets/ directory as icon_*.png
+# Files are in assets/assets/icons/ directory
 STEM_ICONS = {
-    "acapella": BRANDING_ASSETS_DIR / "icon_acapella.png",
-    "drums": BRANDING_ASSETS_DIR / "icon_drums.png",
-    "bass": BRANDING_ASSETS_DIR / "icon_bass.png",
-    "melody": BRANDING_ASSETS_DIR / "icon_melody.png",
-    "instrumental": BRANDING_ASSETS_DIR / "icon_instrumental.png",
+    "acapella": BRANDING_ASSETS_DIR / "icons" / "acapella.png",
+    "drums": BRANDING_ASSETS_DIR / "icons" / "drums.png",
+    "bass": BRANDING_ASSETS_DIR / "icons" / "bass.png",
+    "melody": BRANDING_ASSETS_DIR / "icons" / "melody.png",
+    "instrumental": BRANDING_ASSETS_DIR / "icons" / "instrumental.png",
 }
 
 
@@ -131,19 +132,12 @@ def _get_watermark_path(channel: str) -> Optional[Path]:
     
     # Fallback: try common patterns for Main channel
     if "main" in channel_lower:
-        # Try sgs_watermark.png first
-        fallback = BRANDING_ASSETS_DIR / "sgs_watermark.png"
+        # Try sgs.png in label directory
+        fallback = BRANDING_ASSETS_DIR / "label" / "sgs.png"
         if fallback.exists():
             return fallback
-        # If sgs_watermark.png doesn't exist, try sgs2_watermark.png as backup
-        fallback = BRANDING_ASSETS_DIR / "sgs2_watermark.png"
-        if fallback.exists():
-            return fallback
-        # Also try legacy names
-        fallback = BRANDING_ASSETS_DIR / "sgs.png"
-        if fallback.exists():
-            return fallback
-        fallback = BRANDING_ASSETS_DIR / "sgs_2.png"
+        # If sgs.png doesn't exist, try sgs_2.png as backup
+        fallback = BRANDING_ASSETS_DIR / "label" / "sgs_2.png"
         if fallback.exists():
             return fallback
     
@@ -179,6 +173,7 @@ def create_watermark_clip(channel: str, duration: float, clip_width: int = 1280,
         return None
     
     try:
+        print(f"   Loading watermark from assets: {watermark_path.name}")
         watermark = ImageClip(str(watermark_path)).with_duration(duration)
         
         # Resize watermark while preserving aspect ratio
@@ -235,8 +230,8 @@ def add_watermark(clip, channel: str, duration: float, watermark_clip: Optional[
             if not hasattr(add_watermark, '_warned_channels'):
                 add_watermark._warned_channels = set()
             if channel not in add_watermark._warned_channels:
-                print(f"⚠️ Watermark not found for channel: {channel}")
-                print(f"   Add watermark to: assets/sgs2_watermark.png (required) or assets/sgs_watermark.png (optional)")
+                # Watermark not found (using default)
+                print(f"   Add watermark to: assets/assets/label/sgs.png (required) or assets/assets/label/sgs_2.png (optional)")
                 print(f"   See assets/README.md for details")
                 add_watermark._warned_channels.add(channel)
             return None
@@ -274,6 +269,7 @@ def create_stem_icon_clip(stem_type: str, duration: float, clip_width: int = 128
         return None
     
     try:
+        print(f"   Loading icon from assets: {icon_path.name}")
         icon = ImageClip(str(icon_path)).with_duration(duration)
         # Resize icon
         icon = apply_moviepy_resize(icon, new_size=(80, 80))
@@ -310,8 +306,8 @@ def add_stem_icon(clip, stem_type: str, duration: float, icon_clip: Optional["Im
             if not hasattr(add_stem_icon, '_warned_stems'):
                 add_stem_icon._warned_stems = set()
             if stem_type not in add_stem_icon._warned_stems:
-                print(f"⚠️ Stem icon not found for: {stem_type}")
-                print(f"   Add icon to: assets/icon_{stem_type.lower()}.png")
+                # Stem icon not found (using default)
+                print(f"   Add icon to: assets/assets/icons/{stem_type.lower()}.png")
                 print(f"   See assets/README.md for details")
                 add_stem_icon._warned_stems.add(stem_type)
             return None
@@ -332,6 +328,7 @@ def create_base_clip(duration: float, thumb_path: Optional[str] = None) -> Optio
     """
     Create base clip (background + thumbnail) that can be cached and reused.
     This is the same for all stems of the same track.
+    Background is loaded from assets/assets/background.png if available, otherwise uses black.
     
     Args:
         duration: Duration of the video in seconds
@@ -344,12 +341,27 @@ def create_base_clip(duration: float, thumb_path: Optional[str] = None) -> Optio
         return None
     
     try:
-        # Create background
-        background = ColorClip(
-            size=(1280, 720),
-            color=(0, 0, 0),
-            duration=duration
-        )
+        # Try to load background from assets first
+        background_path = BRANDING_ASSETS_DIR / "background.png"
+        background = None
+        
+        if background_path.exists():
+            try:
+                print(f"   Loading background from: {background_path}")
+                background = ImageClip(str(background_path)).with_duration(duration)
+                # Resize to standard video size (1280x720)
+                background = apply_moviepy_resize(background, new_size=(1280, 720))
+            except Exception as e:
+                print(f"Warning: Could not load background image: {e}")
+                background = None
+        
+        # Fallback to black ColorClip if background image not available
+        if background is None:
+            background = ColorClip(
+                size=(1280, 720),
+                color=(0, 0, 0),
+                duration=duration
+            )
         
         clips = [background]
         

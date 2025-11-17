@@ -53,6 +53,124 @@ from tiktok_uploader import TikTokUploader
 if "comment" not in EasyID3.valid_keys:
     EasyID3.RegisterTXXXKey("comment", "comment")
 
+# Cache for available FFmpeg encoders (checked once per session)
+_available_ffmpeg_encoders: Optional[List[str]] = None
+
+def test_encoder_availability(encoder: str) -> bool:
+    """
+    Test if an encoder is actually available and usable by FFmpeg.
+    Uses a minimal test encode to verify the encoder works.
+    
+    Args:
+        encoder: Encoder name to test
+        
+    Returns:
+        True if encoder is available and usable, False otherwise
+    """
+    try:
+        # Create a minimal 1x1 test image
+        test_cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi",
+            "-i", "color=c=black:s=1x1:d=0.1",
+            "-c:v", encoder,
+            "-frames:v", "1",
+            "-f", "null",
+            "-"
+        ]
+        
+        # Add encoder-specific minimal options
+        if encoder == "libx264":
+            test_cmd.insert(-2, "-preset")
+            test_cmd.insert(-2, "ultrafast")
+        elif encoder == "h264_nvenc":
+            test_cmd.insert(-2, "-preset")
+            test_cmd.insert(-2, "p1")
+        elif encoder == "h264_amf":
+            test_cmd.insert(-2, "-quality")
+            test_cmd.insert(-2, "speed")
+        
+        result = subprocess.run(
+            test_cmd,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        # Check if encoder error occurred
+        error_output = result.stderr.lower() if result.stderr else ""
+        if "unknown encoder" in error_output or "not found" in error_output or "invalid" in error_output:
+            return False
+        
+        # If return code is 0, encoder works
+        return result.returncode == 0
+        
+    except (subprocess.TimeoutExpired, Exception):
+        return False
+
+
+def get_available_ffmpeg_encoders() -> List[str]:
+    """
+    Check which video encoders are available and actually usable in FFmpeg.
+    Tests each encoder to verify it works, not just that it's listed.
+    Returns a list of verified available encoder names.
+    Caches the result to avoid repeated checks.
+    """
+    global _available_ffmpeg_encoders
+    
+    if _available_ffmpeg_encoders is not None:
+        return _available_ffmpeg_encoders
+    
+    available = []
+    target_encoders = ["libx264", "h264_nvenc", "h264_amf", "mpeg4", "mjpeg", "libx264rgb"]
+    
+    try:
+        # First, check if encoders are listed (quick check)
+        result = subprocess.run(
+            ["ffmpeg", "-encoders"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        listed_encoders = []
+        if result.returncode == 0:
+            output = result.stdout + result.stderr
+            # Parse encoder list - look for video encoders (lines starting with " V")
+            for line in output.split('\n'):
+                line_stripped = line.strip()
+                # FFmpeg format: " V..... libx264" - V means video encoder
+                if line_stripped.startswith('V') or ' V' in line_stripped:
+                    for encoder in target_encoders:
+                        # Check if encoder name appears in the line (usually at the end)
+                        parts = line_stripped.split()
+                        if parts and encoder.lower() in parts[-1].lower():
+                            if encoder not in listed_encoders:
+                                listed_encoders.append(encoder)
+        
+        # Now test each listed encoder to verify it actually works
+        for encoder in listed_encoders:
+            if test_encoder_availability(encoder):
+                available.append(encoder)
+        
+        # If no encoders were found via listing, try testing common ones directly
+        if not available:
+            # Test most common encoders directly
+            common_encoders = ["libx264", "mpeg4", "mjpeg"]
+            for encoder in common_encoders:
+                if encoder not in available and test_encoder_availability(encoder):
+                    available.append(encoder)
+        
+        # Silently cache results, no output
+        
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        # Silently fall back to MoviePy
+        pass
+    
+    # Cache the result (even if empty)
+    _available_ffmpeg_encoders = available if available else []
+    return _available_ffmpeg_encoders
+
 
 class Content_download_main(ContentBase):
     """Prepare acapella, drums, and instrumental stems for the main channel.
@@ -139,7 +257,7 @@ class Content_download_main(ContentBase):
             "meta": {**meta, **(metadata or {})},
         }
         set_progress(self.session_id, update)
-        print(f"[PROGRESS] {self.session_id} → {message} ({update['percent']}%)")
+        # Progress update suppressed
 
     def _sanitize_filename(self, name: str) -> str:
         """
@@ -169,8 +287,15 @@ class Content_download_main(ContentBase):
         base = f"{artist_clean} - {title_clean} {stem_display}"
         
         # Build bracket content: [BPM Key] or [BPM] for drums
+        # Rule: Drums channel (son_got_drums) NEVER shows key, regardless of stem type
+        # Rule: Drums stem type NEVER shows key, regardless of channel
         bracket_parts = [f"BPM {bpm}"]
-        if stem_type.lower() != "drums" and key and key != "Unknown":
+        channel_key = self.args.get("channel", "").lower()
+        is_drum_channel = channel_key in ["son_got_drums", "drum", "drums", "songotdrums"]
+        is_drum_stem = stem_type.lower() == "drums"
+        
+        # Only add key if NOT drum channel AND NOT drum stem
+        if not is_drum_channel and not is_drum_stem and key and key != "Unknown":
             bracket_parts.append(key)
         
         bracket = f" [{' '.join(bracket_parts)}]"
@@ -181,10 +306,16 @@ class Content_download_main(ContentBase):
     def _tag_stem(self, file_path: str, stem_type: str, bpm: str, key: str) -> None:
         """
         Write ID3 tags for exported stems.
-        Section 3 rules: Drums = BPM only, all others = BPM + Key
+        Section 3 rules: Drums channel = BPM only, Drums stem = BPM only, all others = BPM + Key
         """
-        # Section 3: Drums gets BPM only, others get BPM + Key
-        if stem_type.lower() == "drums":
+        # Rule: Drums channel (son_got_drums) NEVER shows key, regardless of stem type
+        # Rule: Drums stem type NEVER shows key, regardless of channel
+        channel_key = self.args.get("channel", "").lower()
+        is_drum_channel = channel_key in ["son_got_drums", "drum", "drums", "songotdrums"]
+        is_drum_stem = stem_type.lower() == "drums"
+        
+        # Only add key if NOT drum channel AND NOT drum stem
+        if is_drum_channel or is_drum_stem:
             comment_text = f"BPM: {bpm}"
         else:
             key_text = key if key and key != "Unknown" else ""
@@ -250,39 +381,54 @@ class Content_download_main(ContentBase):
             # Cache base clip (background + thumbnail) for reuse across stems
             # Only recreate if duration or thumbnail path changed
             duration = audio_clip.duration
-            if (self._cached_base_clip is None or 
-                self._cached_duration != duration or 
-                self._cached_thumb_path != thumb_path):
+            # Normalize thumb_path for comparison (handle None and empty strings)
+            normalized_thumb_path = thumb_path if thumb_path else None
+            
+            # Check if we can reuse the cached base clip
+            can_reuse = (
+                self._cached_base_clip is not None and
+                self._cached_duration == duration and
+                self._cached_thumb_path == normalized_thumb_path
+            )
+            
+            if not can_reuse:
                 print(f"   Creating base clip (background + thumbnail)...")
-                self._cached_base_clip = create_base_clip(duration, thumb_path)
+                if normalized_thumb_path:
+                    print(f"      Thumbnail: {normalized_thumb_path}")
+                else:
+                    print(f"      No thumbnail (black background only)")
+                self._cached_base_clip = create_base_clip(duration, normalized_thumb_path)
                 self._cached_duration = duration
-                self._cached_thumb_path = thumb_path
+                self._cached_thumb_path = normalized_thumb_path
             else:
-                print(f"   Reusing cached base clip (background + thumbnail)")
+                print(f"   ✓ Reusing cached base clip (background + thumbnail) - same track, same duration")
                 # Adjust duration if needed (should be same for all stems of same track)
                 if self._cached_base_clip.duration != duration:
+                    print(f"      Adjusting cached base clip duration from {self._cached_base_clip.duration}s to {duration}s")
                     self._cached_base_clip = self._cached_base_clip.with_duration(duration)
             
             # Cache watermark clip (channel-specific, same for all stems of that channel)
+            # Watermark is loaded from assets/assets/label/ and cached per channel
             if channel not in self._cached_watermarks:
-                print(f"   Creating watermark clip for channel: {channel}")
+                print(f"   Creating watermark clip for channel: {channel} (loading from assets)")
                 self._cached_watermarks[channel] = create_watermark_clip(channel, duration, 1280, 720)
             else:
-                print(f"   Reusing cached watermark clip for channel: {channel}")
+                print(f"   ✓ Reusing cached watermark clip for channel: {channel} (loaded from assets)")
                 # Adjust duration if needed
                 cached_wm = self._cached_watermarks[channel]
                 if cached_wm and cached_wm.duration != duration:
                     self._cached_watermarks[channel] = cached_wm.with_duration(duration)
             
             # Cache icon clip (stem-specific, same for all channels using that stem)
+            # Icon is loaded from assets/assets/icons/ and cached per stem type
             watermark_clip = self._cached_watermarks.get(channel)
             icon_clip = None
             if stem_type:
                 if stem_type not in self._cached_icons:
-                    print(f"   Creating icon clip for stem: {stem_type}")
+                    print(f"   Creating icon clip for stem: {stem_type} (loading from assets)")
                     self._cached_icons[stem_type] = create_stem_icon_clip(stem_type, duration, 1280)
                 else:
-                    print(f"   Reusing cached icon clip for stem: {stem_type}")
+                    print(f"   ✓ Reusing cached icon clip for stem: {stem_type} (loaded from assets)")
                     # Adjust duration if needed
                     cached_icon = self._cached_icons[stem_type]
                     if cached_icon and cached_icon.duration != duration:
@@ -304,9 +450,22 @@ class Content_download_main(ContentBase):
                     thumb_clip = ImageClip(thumb).with_duration(audio_clip.duration)
                     thumb_clip = apply_moviepy_resize(thumb_clip, new_size=(720, 720))
                     thumb_clip = thumb_clip.with_position("center")
-                    background = ColorClip(
-                        size=(1280, 720), color=(0, 0, 0), duration=audio_clip.duration
-                    )
+                    # Try to load background from assets, fallback to black
+                    from pathlib import Path
+                    background_path = Path("assets/assets/background.png")
+                    if background_path.exists():
+                        try:
+                            background = ImageClip(str(background_path)).with_duration(audio_clip.duration)
+                            background = apply_moviepy_resize(background, new_size=(1280, 720))
+                        except Exception as e:
+                            print(f"   Warning: Could not load background image, using black: {e}")
+                            background = ColorClip(
+                                size=(1280, 720), color=(0, 0, 0), duration=audio_clip.duration
+                            )
+                    else:
+                        background = ColorClip(
+                            size=(1280, 720), color=(0, 0, 0), duration=audio_clip.duration
+                        )
                     branded_clip = CompositeVideoClip(
                         [background, thumb_clip], size=(1280, 720)
                     )
@@ -323,12 +482,26 @@ class Content_download_main(ContentBase):
                         if iconed:
                             branded_clip = iconed
                 else:
-                    print(f"   No thumbnail, using solid background")
-                    branded_clip = ColorClip(
-                        size=(1280, 720), color=(0, 0, 0), duration=audio_clip.duration
-                    )
+                    print(f"   No thumbnail, using background from assets")
+                    # Try to load background from assets, fallback to black
+                    from pathlib import Path
+                    background_path = Path("assets/assets/background.png")
+                    if background_path.exists():
+                        try:
+                            background_clip = ImageClip(str(background_path)).with_duration(audio_clip.duration)
+                            background_clip = apply_moviepy_resize(background_clip, new_size=(1280, 720))
+                            branded_clip = background_clip
+                        except Exception as e:
+                            print(f"   Warning: Could not load background image, using black: {e}")
+                            branded_clip = ColorClip(
+                                size=(1280, 720), color=(0, 0, 0), duration=audio_clip.duration
+                            )
+                    else:
+                        branded_clip = ColorClip(
+                            size=(1280, 720), color=(0, 0, 0), duration=audio_clip.duration
+                        )
                     
-                    # Add branding to solid background (use cached clips if available)
+                    # Add branding to background (use cached clips if available)
                     from branding_utils import add_watermark, add_stem_icon
                     fallback_wm = self._cached_watermarks.get(channel)
                     watermarked = add_watermark(branded_clip, channel, audio_clip.duration, watermark_clip=fallback_wm)
@@ -342,8 +515,6 @@ class Content_download_main(ContentBase):
 
             # For static images, use FFmpeg directly - no frame processing needed!
             # Extract a single frame from the composite clip and combine with audio using FFmpeg
-            print(f"   Creating static image frame...")
-            
             # Get a single frame at t=0 (static image, so any frame is the same)
             frame_image = branded_clip.get_frame(0)
             
@@ -355,99 +526,65 @@ class Content_download_main(ContentBase):
                     from PIL import Image
                     Image.fromarray(frame_image).save(tmp_img_path)
                 
-                # Try FFmpeg direct call first (faster), fall back to MoviePy if encoder not available
-                ffmpeg_success = False
-                encoders_to_try = ["libx264", "h264_nvenc", "h264_amf"]
+                # Verify inputs exist
+                if not os.path.exists(tmp_img_path):
+                    raise Exception(f"Temporary image file not found: {tmp_img_path}")
+                if not os.path.exists(audio_path):
+                    raise Exception(f"Audio file not found: {audio_path}")
                 
-                for encoder in encoders_to_try:
-                    try:
-                        print(f"   Combining static image with audio using FFmpeg ({encoder})...")
-                        # Use FFmpeg to combine static image with audio - maximum speed optimizations
-                        cmd = [
-                            "ffmpeg", "-y",
-                            "-threads", "0",  # Use all available CPU threads
-                            "-loop", "1",  # Loop the static image
-                            "-i", tmp_img_path,  # Input image
-                            "-i", audio_path,  # Input audio
-                            "-c:v", encoder,  # Video codec (try different encoders)
-                        ]
-                        
-                        # Add encoder-specific options
-                        if encoder == "libx264":
-                            cmd.extend([
-                                "-preset", "ultrafast",
-                                "-tune", "stillimage",
-                                "-crf", "28",
-                                "-g", "1",
-                                "-bf", "0",
-                                "-refs", "1",
-                            ])
-                        elif encoder == "h264_nvenc":
-                            cmd.extend([
-                                "-preset", "p1",  # Fastest NVENC preset
-                                "-tune", "ll",  # Low latency
-                                "-rc", "vbr",
-                                "-cq", "28",
-                            ])
-                        elif encoder == "h264_amf":
-                            cmd.extend([
-                                "-quality", "speed",
-                                "-rc", "vbr_peak",
-                                "-qmin", "18",
-                                "-qmax", "28",
-                            ])
-                        
-                        # Common audio options
-                        cmd.extend([
-                            "-c:a", "aac",
-                            "-b:a", "128k",
-                            "-ar", "44100",
-                            "-ac", "2",
-                            "-pix_fmt", "yuv420p",
-                            "-vsync", "0",
-                            "-shortest",
-                            "-r", "1",
-                            out_path
-                        ])
-                        
-                        # Capture stderr to help debug if it fails
-                        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
-                        if result.returncode == 0:
-                            print(f" ✓ Video rendered with {encoder}: {out_path}")
-                            ffmpeg_success = True
-                            break
-                        else:
-                            error_msg = result.stderr if result.stderr else result.stdout
-                            if "Unknown encoder" in error_msg or "not found" in error_msg:
-                                print(f"   {encoder} not available, trying next encoder...")
-                                continue
-                            else:
-                                # Other error, show it but try next encoder
-                                print(f"   {encoder} failed: {error_msg[:200]}")
-                                continue
-                    except Exception as e:
-                        print(f"   {encoder} attempt failed: {e}")
-                        continue
+                # Normalize paths for Windows (handle special characters)
+                tmp_img_path = os.path.normpath(tmp_img_path)
+                audio_path = os.path.normpath(audio_path)
+                out_path = os.path.normpath(out_path)
                 
-                if not ffmpeg_success:
-                    # Fall back to MoviePy which will handle encoder selection automatically
-                    print(f"   FFmpeg direct call failed, falling back to MoviePy (slower but compatible)...")
-                    # Use with_audio instead of set_audio (newer MoviePy API)
-                    final_video = branded_clip.with_audio(audio_clip)
-                    final_video.write_videofile(
-                        out_path,
-                        codec=None,  # Let MoviePy choose the best available encoder
-                        audio_codec="aac",
-                        fps=1,  # Minimal FPS for static image
-                        preset="ultrafast",
-                        threads=0,  # Use all threads
-                        logger=None,  # Suppress verbose output
-                    )
-                    print(f" ✓ Video rendered with MoviePy: {out_path}")
+                # Ensure output directory exists
+                out_dir = os.path.dirname(out_path)
+                if out_dir and not os.path.exists(out_dir):
+                    os.makedirs(out_dir, exist_ok=True)
+                    print(f"   Created output directory: {out_dir}")
+                
+                # FFmpeg command for static image + audio (using auto-detect encoder)
+                # Let FFmpeg automatically choose the best available video encoder
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-loop", "1",
+                    "-framerate", "1",
+                    "-i", tmp_img_path,
+                    "-i", audio_path,
+                    "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                    "-shortest",
+                    out_path
+                ]
+                
+                print(f"   Running FFmpeg command (auto-detect encoder)...")
+                result = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=300)
+                
+                if result.returncode != 0:
+                    # Get full error message
+                    error_msg = result.stderr if result.stderr else result.stdout if result.stdout else "Unknown error (no output)"
+                    
+                    # Show last 30 lines of error (skip first few lines which are usually version info)
+                    error_lines = error_msg.split('\n')
+                    # Skip first 5 lines (usually version/build info) and show last 30
+                    relevant_lines = error_lines[5:] if len(error_lines) > 5 else error_lines
+                    error_summary = '\n'.join(relevant_lines[-30:])
+                    
+                    # Show command for debugging
+                    cmd_str = ' '.join(f'"{arg}"' if ' ' in str(arg) else str(arg) for arg in cmd)
+                    full_error = f"FFmpeg encoding failed (return code: {result.returncode})\n\nCommand:\n{cmd_str}\n\nError output:\n{error_summary}"
+                    raise Exception(full_error)
             finally:
                 # Clean up temporary image
                 if tmp_img_path and os.path.exists(tmp_img_path):
                     os.unlink(tmp_img_path)
+            
+            # Verify output file exists and return path
+            if os.path.exists(out_path):
+                return out_path
+            else:
+                print(f" ✗ Video file not created: {out_path}")
+                return None
         except Exception as exc:
             print(f" ✗ Failed to render {stem_type} video: {exc}")
             import traceback
@@ -510,7 +647,7 @@ class Content_download_main(ContentBase):
                 segment.export(audio_path, format="mp3")
                 print(f"   ✓ Mixed and exported: {audio_path}")
             else:
-                print(f"   Copying {sources[0]} to {audio_path}")
+                # Copying audio file
                 shutil.copy(sources[0], audio_path)
                 print(f"   ✓ Copied: {audio_path}")
         except Exception as exc:
@@ -539,8 +676,23 @@ class Content_download_main(ContentBase):
         print(f"Processing Stem: {stem_type}")
         print(f"{'='*60}")
         
-        bpm = format_bpm_label(track.get("tempo", 0))
-        key = track.get("key", "Unknown")
+        # Get BPM/Key from args first (has analyzed values), then fallback to track_info
+        # Priority: args["bpm"]/args["key"] (analyzed) > track["tempo"]/track["key"] (original)
+        bpm_value = self.args.get("bpm") or track.get("tempo", 0)
+        key_value = self.args.get("key") or track.get("key", "Unknown")
+        
+        # Ensure we have valid values (analyzed values should be set by dispatch_stem_processing)
+        if not bpm_value or bpm_value == 0:
+            # Fallback: try track_info from args
+            track_info = self.args.get("track_info", {})
+            bpm_value = track_info.get("tempo") or track.get("tempo", 0)
+        if not key_value or key_value == "Unknown":
+            # Fallback: try track_info from args
+            track_info = self.args.get("track_info", {})
+            key_value = track_info.get("key") or track.get("key", "Unknown")
+        
+        bpm = format_bpm_label(bpm_value)
+        key = str(key_value) if key_value and key_value != "Unknown" else "Unknown"
         artist = track.get("artist", "Unknown Artist")
         title = track.get("name", "Unknown Track")
         channel = self.channel_label
@@ -549,10 +701,13 @@ class Content_download_main(ContentBase):
         folder_title = self._build_folder_title(artist, title, stem_type, bpm, key)
         base_folder = os.path.join(channel, self.genre_folder, stem_type, folder_title)
         
+        # Verify BPM/Key are being used correctly for MP4 filename
+        # Expected format: "Artist - Song StemType [BPM 95 D major]"
         print(f"Artist: {artist}")
         print(f"Title: {title}")
         print(f"Channel: {channel}")
         print(f"BPM: {bpm} | Key: {key}")
+        print(f"MP4 filename will be: {folder_title}.mp4")
 
         self.incremental_progress(
             f"🎧 Preparing {stem_type} audio...",
@@ -583,7 +738,7 @@ class Content_download_main(ContentBase):
         fast_mode = not render_videos
         
         if fast_mode:
-            print(f"[FAST MODE] Skipping video rendering, branding, thumbnails for {stem_type}")
+            # Fast mode: skipping video rendering
             self.incremental_progress(
                 f"⏩ Fast Mode: Skipping video rendering for {stem_type}...",
                 step_offset + 0.4,
@@ -642,21 +797,31 @@ class Content_download_main(ContentBase):
 
         artist = track.get("artist", "Unknown Artist")
         title = track.get("name", "Unknown Track")
-        bpm = format_bpm_label(track.get("tempo", 0))
-        key = track.get("key", "Unknown")
+        # Get BPM/Key from args first (has analyzed values), then fallback to track_info
+        bpm_value = self.args.get("bpm") or track.get("tempo", 0)
+        key_value = self.args.get("key") or track.get("key", "Unknown")
+        bpm = format_bpm_label(bpm_value)
+        key = str(key_value) if key_value and key_value != "Unknown" else "Unknown"
 
         key_text = str(key).strip() if key else ""
 
         # Build titles with artist, track name, stem type, and BPM/Key
-        # Section 3: Drums = BPM only, others = BPM + Key
+        # Section 3: Drums channel = BPM only, Drums stem = BPM only, others = BPM + Key
         # BPM label comes before the number
-        title_map = {
-            "acapella": f"{artist} - {title} Acapella [BPM {bpm}{(' ' + key_text) if key_text else ''}]",
-            "drums": f"{artist} - {title} Drums [BPM {bpm}]",
-            "bass": f"{artist} - {title} Bass [BPM {bpm}{(' ' + key_text) if key_text else ''}]",
-            "melody": f"{artist} - {title} Melody [BPM {bpm}{(' ' + key_text) if key_text else ''}]",
-            "instrumental": f"{artist} - {title} Instrumental [BPM {bpm}{(' ' + key_text) if key_text else ''}]",
-        }
+        channel_key = self.args.get("channel", "").lower()
+        is_drum_channel = channel_key in ["son_got_drums", "drum", "drums", "songotdrums"]
+        
+        # Drums channel: never show key, regardless of stem type
+        # Drums stem: never show key, regardless of channel
+        title_map = {}
+        for stem_key in ["acapella", "drums", "bass", "melody", "instrumental"]:
+            stem_display = stem_key.title()
+            is_drum_stem = stem_key.lower() == "drums"
+            # Only add key if NOT drum channel AND NOT drum stem
+            if is_drum_channel or is_drum_stem:
+                title_map[stem_key] = f"{artist} - {title} {stem_display} [BPM {bpm}]"
+            else:
+                title_map[stem_key] = f"{artist} - {title} {stem_display} [BPM {bpm}{(' ' + key_text) if key_text else ''}]"
 
         # Merge default tags with artist/title/stem types
         tags = list({
@@ -707,8 +872,11 @@ class Content_download_main(ContentBase):
 
         artist = track.get("artist", "Unknown Artist")
         title = track.get("name", "Unknown Track")
-        bpm = format_bpm_label(track.get("tempo", 0))
-        key = track.get("key", "Unknown")
+        # Get BPM/Key from args first (has analyzed values), then fallback to track_info
+        bpm_value = self.args.get("bpm") or track.get("tempo", 0)
+        key_value = self.args.get("key") or track.get("key", "Unknown")
+        bpm = format_bpm_label(bpm_value)
+        key = str(key_value) if key_value and key_value != "Unknown" else "Unknown"
 
         key_text = str(key).strip() if key else ""
 
@@ -741,9 +909,19 @@ class Content_download_main(ContentBase):
                     print(f" Skipping TikTok upload for {stem_type} — file not found")
                     continue
 
-                stem_title = f"{artist} - {title} {stem_type.title()} [BPM {bpm}{(' ' + key_text) if key_text else ''}]"
+                # Rule: Drums channel (son_got_drums) NEVER shows key, regardless of stem type
+                # Rule: Drums stem type NEVER shows key, regardless of channel
+                channel_key = self.args.get("channel", "").lower()
+                is_drum_channel = channel_key in ["son_got_drums", "drum", "drums", "songotdrums"]
+                is_drum_stem = stem_type.lower() == "drums"
                 
-                print(f" [TikTok] Uploading {stem_type}...")
+                # Only add key if NOT drum channel AND NOT drum stem
+                if is_drum_channel or is_drum_stem:
+                    stem_title = f"{artist} - {title} {stem_type.title()} [BPM {bpm}]"
+                else:
+                    stem_title = f"{artist} - {title} {stem_type.title()} [BPM {bpm}{(' ' + key_text) if key_text else ''}]"
+                
+                # Uploading to TikTok
                 video_id = uploader.upload_video(
                     video_path=video_path,
                     title=stem_title,
@@ -753,7 +931,7 @@ class Content_download_main(ContentBase):
                 )
 
                 if video_id and comment:
-                    print(f" [TikTok] Posting comment on {video_id}...")
+                    # Posting TikTok comment
                     uploader.post_comment(video_id, comment)
 
                 self.update_progress(f" {stem_type.title()} uploaded to TikTok", {"artist": artist})
@@ -774,8 +952,11 @@ class Content_download_main(ContentBase):
         total_steps = 2 + len(self.STEM_DEFINITIONS) * 4
         self.progress_with_meta("🔍 Preparing main channel stems...", 1, total_steps, "Acapella", self.channel_label, track)
 
-        bpm = format_bpm_label(track.get("tempo", 0))
-        key = track.get("key", "Unknown")
+        # Get BPM/Key from args first (has analyzed values), then fallback to track_info
+        bpm_value = self.args.get("bpm") or track.get("tempo", 0)
+        key_value = self.args.get("key") or track.get("key", "Unknown")
+        bpm = format_bpm_label(bpm_value)
+        key = str(key_value) if key_value and key_value != "Unknown" else "Unknown"
         artist = track.get("artist", "Unknown Artist")
         title = track.get("name", "Unknown Track")
 
@@ -786,7 +967,7 @@ class Content_download_main(ContentBase):
         fast_mode = not render_videos
         
         if fast_mode:
-            print(f"[FAST MODE] Skipping thumbnail download")
+            # Fast mode: skipping thumbnail
             thumb_path = None
         else:
             self.progress_with_meta(" Fetching thumbnail...", 2, total_steps, "Acapella", self.channel_label, track)
@@ -800,7 +981,7 @@ class Content_download_main(ContentBase):
         for idx, (stem_type, config) in enumerate(self.STEM_DEFINITIONS.items(), start=1):
             stem_lower = stem_type.lower()
             if stem_lower not in [s.lower() for s in selected_stems_for_channel]:
-                print(f" Skipping {stem_type} (not selected for {channel_key})")
+                # Silently skip unselected stems - no message needed
                 continue
             base_step = 2 + (idx - 1) * 4 + 1
             success = self.process_stem(stem_type, config, track, thumb_path, base_step, total_steps)
@@ -810,21 +991,17 @@ class Content_download_main(ContentBase):
             self.fail_progress_with_meta(" No stems were processed for the main channel", "Acapella", self.channel_label, track)
             return
 
-        # Check if we should create MP4s even without upload
-        # MP4s are created in Enhanced Mode (yt=True) or if render_videos flag is set
+        # Store video paths for batch upload after all channels are processed
+        # Upload will happen after all channels finish processing (in dispatch_download.py)
+        # This allows all MP4s to be created first, then upload all at once (faster)
         render_videos = self.args.get("yt", False) or self.args.get("render_videos", False)
         
         if not render_videos and not self.args.get("yt"):
             meta = self.build_meta("Acapella", self.channel_label, track)
-            self.update_progress(" Skipping YouTube upload and video rendering (yt flag disabled)", meta)
-        elif self.args.get("yt"):
-            self.upload_batch_to_youtube(track)
-        else:
-            meta = self.build_meta("Acapella", self.channel_label, track)
-            self.update_progress(" Videos created but skipping YouTube upload", meta)
-
-        if self.args.get("tiktok"):
-            self.upload_batch_to_tiktok(track)
+            # Videos not needed - processing complete
+            pass
+        # Note: Upload is deferred to batch upload after all channels process
+        # This is handled in dispatch_download.py after all channels finish
 
         self.progress_with_meta(" Main channel stems complete!", total_steps, total_steps, "Acapella", self.channel_label, track)
         self.mark_complete_with_meta(" Main channel upload ready", "Acapella", self.channel_label, track)

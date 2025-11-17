@@ -14,11 +14,15 @@ import traceback
 import copy
 import webbrowser
 import threading
+import logging
 from datetime import datetime, timedelta
+
+# Suppress spotipy HTTP error logging (especially 404s)
+logging.getLogger("spotipy").setLevel(logging.CRITICAL)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 from shared_state import set_progress, get_progress, delete_progress
 from dispatch_download import process_all_tracks
-from tunebat_helper import get_bpm_key
 
 app = FastAPI(title="Stem Splitter & YouTube Scheduler")
 templates = Jinja2Templates(directory="templates")
@@ -231,59 +235,113 @@ def split_and_schedule(request: StemRequest):
             client_secret=CLIENT_SECRET
         ))
 
-        # --- Determine if input is playlist, artist, or single track ---
-        # Try playlist first, then artist, then fall back to single track
+        # --- Automatically detect if input is track, playlist, or artist ---
+        # Try track first (most common), then playlist, then artist
         track_ids = []
         is_playlist = False
+        detected_type = None
         
+        # Clean the input ID first
+        clean_input_id = input_id.strip()
+        if clean_input_id.startswith("spotify:track:"):
+            clean_input_id = clean_input_id.replace("spotify:track:", "").strip()
+        elif clean_input_id.startswith("spotify:playlist:"):
+            clean_input_id = clean_input_id.replace("spotify:playlist:", "").strip()
+        elif clean_input_id.startswith("spotify:artist:"):
+            clean_input_id = clean_input_id.replace("spotify:artist:", "").strip()
+        elif "/track/" in clean_input_id:
+            clean_input_id = clean_input_id.split("/track/")[-1].split("?")[0].strip()
+        elif "/playlist/" in clean_input_id:
+            clean_input_id = clean_input_id.split("/playlist/")[-1].split("?")[0].strip()
+        elif "/artist/" in clean_input_id:
+            clean_input_id = clean_input_id.split("/artist/")[-1].split("?")[0].strip()
+        
+        # Try single track first (most common use case)
         try:
-            playlist = sp.playlist(input_id)
-            track_ids = get_all_track_ids(input_id)
-            is_playlist = True
-            print(f"[SPOTIFY] Detected playlist: {playlist.get('name', 'Unknown')} ({len(track_ids)} tracks)")
-        except Exception as playlist_error:
-            # Try artist ID
+            track_info = sp.track(clean_input_id)
+            track_ids = [clean_input_id]
+            is_playlist = False
+            detected_type = "track"
+            # Detected single track
+        except Exception as track_error:
+            # Track lookup failed, try playlist
             try:
-                artist = sp.artist(input_id)
-                artist_name = artist.get('name', 'Unknown Artist')
-                print(f"[SPOTIFY] Detected artist: {artist_name}")
-                
-                # Get artist's top tracks
-                top_tracks = sp.artist_top_tracks(input_id, country='US')
-                if top_tracks and top_tracks.get('tracks'):
-                    track_ids = [track['id'] for track in top_tracks['tracks'] if track.get('id')]
-                    print(f"[SPOTIFY] Found {len(track_ids)} top tracks for {artist_name}")
-                else:
-                    # Fallback: get tracks from artist's albums
-                    albums = sp.artist_albums(input_id, album_type='album', limit=5)
-                    track_ids = []
-                    for album in albums.get('items', []):
-                        album_tracks = sp.album_tracks(album['id'])
-                        for track_item in album_tracks.get('items', []):
-                            if track_item.get('id'):
-                                track_ids.append(track_item['id'])
-                    print(f"[SPOTIFY] Found {len(track_ids)} tracks from albums for {artist_name}")
-                
-                if not track_ids:
-                    raise ValueError(f"No tracks found for artist {artist_name}")
+                playlist = sp.playlist(clean_input_id)
+                track_ids = get_all_track_ids(clean_input_id)
+                is_playlist = True
+                detected_type = "playlist"
+                # Detected playlist
+            except Exception as playlist_error:
+                # Playlist lookup failed, try artist
+                try:
+                    artist = sp.artist(clean_input_id)
+                    artist_name = artist.get('name', 'Unknown Artist')
+                    detected_type = "artist"
+                    # Detected artist
                     
-            except Exception as artist_error:
-                # If both playlist and artist lookup fail, treat as single track ID
-                track_ids = [input_id]
-                is_playlist = False
-                print(f"[SPOTIFY] Treating as single track ID: {input_id}")
+                    # Get artist's top tracks
+                    top_tracks = sp.artist_top_tracks(clean_input_id, country='US')
+                    if top_tracks and top_tracks.get('tracks'):
+                        track_ids = [track['id'] for track in top_tracks['tracks'] if track.get('id')]
+                        # Found top tracks
+                    else:
+                        # Fallback: get tracks from artist's albums
+                        albums = sp.artist_albums(clean_input_id, album_type='album', limit=5)
+                        track_ids = []
+                        for album in albums.get('items', []):
+                            album_tracks = sp.album_tracks(album['id'])
+                            for track_item in album_tracks.get('items', []):
+                                if track_item.get('id'):
+                                    track_ids.append(track_item['id'])
+                        # Found tracks from albums
+                    
+                    if not track_ids:
+                        raise ValueError(f"No tracks found for artist {artist_name}")
+                        
+                except Exception as artist_error:
+                    # All lookups failed - provide helpful error message
+                    error_msg = f"Could not identify input as track, playlist, or artist: {clean_input_id}"
+                    print(f"[ERROR] {error_msg}")
+                    print(f"[ERROR] Track error: {track_error}")
+                    print(f"[ERROR] Playlist error: {playlist_error}")
+                    print(f"[ERROR] Artist error: {artist_error}")
+                    raise ValueError(error_msg)
+        
+        if not track_ids:
+            raise ValueError(f"No tracks found for input: {clean_input_id}")
+        
+        # Processing tracks
 
         batch = []
         sessions = []
         
-        print(f"[API] Received channels from frontend: {request.channels}")
+        # Received channels
 
         for idx, track_id in enumerate(track_ids):
             session_id = f"{input_id}__{track_id}"
             sessions.append(session_id)
-            info = sp.track(track_id)
+            
+            # Track IDs are already cleaned from the detection phase above
+            # Just ensure it's a valid format
+            clean_track_id = track_id.strip()
+            
+            # Clean any remaining invalid characters (keep alphanumeric, hyphens, underscores)
+            import re
+            clean_track_id = re.sub(r'[^a-zA-Z0-9_-]', '', clean_track_id)
+            
+            if not clean_track_id:
+                raise ValueError(f"Empty track ID provided at index {idx}")
+            
+            # Fetch track info (should work since we already validated it during detection)
+            try:
+                info = sp.track(clean_track_id)
+            except Exception as track_error:
+                # If it fails here, something went wrong (shouldn't happen after detection)
+                print(f"[ERROR] Failed to fetch track info for {clean_track_id}: {track_error}")
+                raise ValueError(f"Could not fetch track info for ID: {clean_track_id}")
+            
             artist, title = info["artists"][0]["name"], info["name"]
-            batch.append((title, artist, track_id))
+            batch.append((title, artist, clean_track_id))
             channel_displays = [UI_CHANNEL_DISPLAY_MAP.get(ch, ch) for ch in request.channels]
             set_progress(session_id, {
                 "message": " Preparing track metadata...",
@@ -300,21 +358,63 @@ def split_and_schedule(request: StemRequest):
             })
 
         def run_full_pipeline():
-            bpm_key_map = {}
-
-            # Fetch BPM/Key for all tracks (using Tunebat - Spotify API deprecated)
-            for title, artist, track_id in batch:
-                # Tunebat is primary source (Spotify API requires full website app approval)
-                bpm, key = get_bpm_key(title, artist, track_id)
-                bpm_key_map[track_id] = (bpm, key)
-
+            # BPM/Key will be fetched from Tunebat after download (in dispatch_stem_processing)
+            # Build full track_info objects for playlist tracks to ensure consistency
+            
             per_track_args = {}
             for idx, (title, artist, track_id) in enumerate(batch):
-                bpm, key = bpm_key_map.get(track_id, (0, "Unknown"))
                 args = copy.deepcopy(shared_args)
-                args["bpm"] = bpm
-                args["key"] = key
+                # BPM/Key will be set from Tunebat after download
+                # If not fetched, defaults to 0/"Unknown" which will trigger Tunebat fetch
+                args["bpm"] = args.get("bpm", 0)
+                args["key"] = args.get("key", "Unknown")
                 args["global_artist_index"] = idx
+                args["track_title"] = title
+                args["track_artist"] = artist
+                
+                # Build full track_info object for playlist tracks
+                # This ensures consistency and includes all necessary fields (duration, id, etc.)
+                try:
+                    # Fetch full track info from Spotify to get duration and other metadata
+                    track = sp.track(track_id)
+                    album_images = track.get("album", {}).get("images", [])
+                    img_url = album_images[0]["url"] if album_images else ""
+                    
+                    # Get genre
+                    genre_items = sp.search(q=f"artist:{artist}", type="artist").get("artists", {}).get("items", [])
+                    genre = genre_items[0]["genres"][0] if genre_items and genre_items[0].get("genres") else "Other"
+                    
+                    # Get duration from Spotify track
+                    duration_seconds = track.get("duration_ms", 0) / 1000.0 if track.get("duration_ms") else None
+                    
+                    # Build complete track_info object matching ContentBase.get_track_info format
+                    track_info = {
+                        "name": title,
+                        "artist": artist,
+                        "album": track.get("album", {}).get("name", ""),
+                        "category": [genre.title().replace(" ", "_")],
+                        "release_date": track.get("album", {}).get("release_date", ""),
+                        "popularity": track.get("popularity", 0),
+                        "img": img_url,
+                        "tempo": 0,  # Will be set from Tunebat
+                        "key": "Unknown",  # Will be set from Tunebat
+                        "duration_seconds": duration_seconds,
+                        "id": track_id
+                    }
+                    
+                    # Pass track_info in args so it's available in dispatch_stem_processing
+                    args["track_info"] = track_info
+                except Exception as e:
+                    print(f"[WARNING] Failed to build track_info for {track_id}: {e}")
+                    # Fallback: create minimal track_info
+                    args["track_info"] = {
+                        "name": title,
+                        "artist": artist,
+                        "id": track_id,
+                        "duration_seconds": None,
+                        "tempo": 0,
+                        "key": "Unknown"
+                    }
 
                 start_local = args.get("base_start_local", "")
                 interval_minutes = int(args.get("interval_minutes", 0) or 0)
@@ -336,7 +436,7 @@ def split_and_schedule(request: StemRequest):
                 per_track_args[track_id] = args
 
             # --- Run all tracks sequentially (1 song → all stems) ---
-            print(f"[PROCESS] Starting processing with channels: {request.channels}")
+            # Starting processing
             process_all_tracks(
                 track_ids,
                 request.channels,

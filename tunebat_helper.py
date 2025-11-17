@@ -6,9 +6,9 @@ import json
 import hashlib
 
 TUNEBAT_CACHE_FILE = "tunebat_cache.json"
-MAX_RETRIES = 2  # Reduced from 3 to 2 for faster failure
-BACKOFF_BASE = 1.5  # Reduced backoff time
-SESSION_REFRESH_RETRIES = 1  # Reduced from 2 to 1
+MAX_RETRIES = 3
+BACKOFF_BASE = 2
+SESSION_REFRESH_RETRIES = 2  # Additional retries after session refresh
 
 
 class TunebatHelper:
@@ -67,20 +67,17 @@ class TunebatHelper:
         except Exception:
             return False
 
-    def fetch_bpm_key(self, track_name: str, artist_name: str, track_id: str, spotify_client=None) -> tuple:
+    def fetch_bpm_key(self, track_name: str, artist_name: str, track_id: str) -> tuple:
         """
-        Fetch BPM/Key from Tunebat (primary source).
-        Spotify API requires full website app approval, so Tunebat is the easier alternative.
-        spotify_client parameter is kept for backward compatibility but ignored.
+        Section 6: Enhanced Tunebat fetch with automatic retry, session refresh,
+        and fallback metadata pull.
         """
         cache_key = self._get_cache_key(track_name, artist_name, track_id)
         
         if cache_key in self.cache:
             cached = self.cache[cache_key]
-            print(f"💾 Cache hit: {artist_name} - {track_name} (BPM: {cached['bpm']}, Key: {cached['key']})")
+            print(f"💾 Tunebat cache hit: {artist_name} - {track_name}")
             return cached['bpm'], cached['key']
-        
-        # Use Tunebat as primary source (Spotify API deprecated/requires approval)
 
         def slugify(text):
             return text.strip().replace(" ", "-")
@@ -96,13 +93,11 @@ class TunebatHelper:
             try:
                 with sync_playwright() as p:
                     browser = p.chromium.launch(
-                        headless=True,  # Faster - run in background
+                        headless=False,
                         args=[
                             "--disable-blink-features=AutomationControlled",
                             "--no-sandbox",
-                            "--disable-dev-shm-usage",
-                            "--disable-gpu",
-                            "--disable-images"  # Faster loading
+                            "--disable-dev-shm-usage"
                         ]
                     )
                     page = browser.new_page()
@@ -110,7 +105,7 @@ class TunebatHelper:
                     
                     try:
                         # Use less strict wait condition to avoid timeouts
-                        page.goto(url, wait_until="domcontentloaded", timeout=30000)  # Reduced from 120s to 30s
+                        page.goto(url, wait_until="domcontentloaded", timeout=120000)
                     except TimeoutError:
                         print(f" Navigation timeout, retrying...")
                         browser.close()
@@ -279,9 +274,5 @@ class TunebatHelper:
 _helper = TunebatHelper()
 
 
-def get_bpm_key(track_name: str, artist_name: str, track_id: str, spotify_client=None) -> tuple[int, str]:
-    """
-    Get BPM and Key from Tunebat.
-    spotify_client parameter is kept for backward compatibility but ignored.
-    """
-    return _helper.fetch_bpm_key(track_name, artist_name, track_id, spotify_client)
+def get_bpm_key(track_name: str, artist_name: str, track_id: str) -> tuple[int, str]:
+    return _helper.fetch_bpm_key(track_name, artist_name, track_id)

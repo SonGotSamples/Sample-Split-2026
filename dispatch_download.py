@@ -20,6 +20,7 @@ from random import uniform
 from concurrent.futures import ThreadPoolExecutor
 from shared_state import set_progress, get_progress
 from content_base import ContentBase, CHANNEL_NAME_MAP
+from tunebat_helper import get_bpm_key
 
 # --------------------------------------------------------------------------------------
 # GPU Auto-Detection
@@ -116,10 +117,11 @@ def demucs_outdir_for_input(model_name: str, input_mp3: str) -> str:
 def run_demucs_with_model_stream(mp3_path: str, device: str, model_name: str):
     """
     Run demucs and stream stdout to terminal in real time (so clients see progress).
+    Filters out progress bar lines to reduce clutter.
     Returns (returncode, tail_text).
     """
     try:
-        print(f"\n[DEMUCS] ▶ Running model: {model_name} on {device}")
+        # Running Demucs model
         process = subprocess.Popen(
             ["demucs", "--mp3", "-n", model_name, "--shifts", "0", "-d", device, mp3_path],
             stdout=subprocess.PIPE,
@@ -130,8 +132,22 @@ def run_demucs_with_model_stream(mp3_path: str, device: str, model_name: str):
         last_lines = []
         for line in iter(process.stdout.readline, ""):
             if line:
-                sys.stdout.write(f"[DEMUCS][{model_name}] {line}")
-                sys.stdout.flush()
+                # Filter out progress bar lines (contain %| or progress indicators)
+                # Keep important messages like errors, warnings, or completion status
+                stripped = line.strip()
+                is_progress_bar = (
+                    "%|" in stripped or
+                    "seconds/s" in stripped or
+                    (stripped and stripped[0] in "0123456789" and "%" in stripped) or
+                    ("/" in stripped and "[" in stripped and "]" in stripped and any(c.isdigit() for c in stripped))
+                )
+                
+                if not is_progress_bar:
+                    # Only print non-progress-bar lines
+                    sys.stdout.write(f"[DEMUCS][{model_name}] {line}")
+                    sys.stdout.flush()
+                
+                # Always keep last lines for error detection (even progress bars)
                 last_lines.append(line)
                 if len(last_lines) > 200:
                     last_lines.pop(0)
@@ -139,7 +155,7 @@ def run_demucs_with_model_stream(mp3_path: str, device: str, model_name: str):
         process.stdout.close()
         process.wait()
         rc = process.returncode
-        print(f"[DEMUCS] ◀ Model {model_name} finished with rc={rc}")
+        # Demucs finished
         return rc, "".join(last_lines)
     except Exception as e:
         print(f"[DEMUCS] Failed to invoke demucs for {model_name}: {e}")
@@ -157,14 +173,14 @@ def run_demucs_with_fallbacks(mp3_path: str, device: str, session_id: str):
         out_dir = demucs_outdir_for_input(model, mp3_path)
 
         if rc is None:
-            print(f"[DEMUCS] Could not start model {model}; trying next…")
+            # Model failed, trying next
             continue
 
         if rc != 0 or not os.path.exists(out_dir):
-            print(f"[DEMUCS] Model {model} failed. rc={rc} out_dir={out_dir} exists={os.path.exists(out_dir)}")
+            # Model failed
             # If GPU OOM, try CPU once
             if device.startswith("cuda") and ("CUDA out of memory" in tail or "CUDA error" in tail):
-                print("[DEMUCS] CUDA OOM detected — retrying on CPU…")
+                # CUDA OOM, retrying on CPU
                 rc2, _ = run_demucs_with_model_stream(mp3_path, "cpu", model)
                 if rc2 == 0 and os.path.exists(out_dir):
                     v = validate_stems(out_dir)
@@ -175,10 +191,10 @@ def run_demucs_with_fallbacks(mp3_path: str, device: str, session_id: str):
         # Validate stems
         validation = validate_stems(out_dir)
         if validation.get("ok"):
-            print(f"[VALIDATE] {model} stems OK  at {out_dir}")
+            # Stems validated
             return model, out_dir, validation
 
-        print(f"[VALIDATE] Problems with {model}: {validation.get('problems')}")
+        # Validation problems, trying next model
         set_progress(session_id, {
             "message": f"🔁 Fallback: {model} produced weak stems; trying next…",
             "percent": 20
@@ -220,7 +236,7 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
       - per_track_cooldown_sec: float|tuple -> sleep after finishing a track (default 0)
       - retry_backoff_sec: float|tuple -> sleep before a single re-download attempt (default (15, 30))
     """
-    print(f"\n[DISPATCH] Selected channels to process: {selected_channels}")
+    # Processing channels
     
     # Determine upload destinations (respect yt flag; don't force based on channel selection)
     args["yt"] = args.get("yt", False)
@@ -234,26 +250,75 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
         time.sleep(float(jitter))
 
     print(f"\n Dispatching stem processing for track: {track_id}")
-    base = ContentBase({**args, "session_id": session_id})
-
-    # Fetch track info
-    track_info = base.get_track_info(track_id)
-    if not track_info:
-        set_progress(session_id, {"message": " Failed to get track info", "percent": 0})
-        print("[ERROR] Failed to get track info")
-        return
+    
+    # Use pre-fetched track_info from args if available (from playlist processing)
+    # Otherwise, create ContentBase and fetch it
+    pre_fetched_track_info = args.get("track_info")
+    if pre_fetched_track_info and pre_fetched_track_info.get("id") == track_id:
+        # Use pre-fetched track info (from playlist processing in tk.py)
+        track_info = pre_fetched_track_info
+        # Ensure track_id is set correctly
+        track_info["id"] = track_id
+        base = ContentBase({**args, "session_id": session_id, "track_info": track_info})
+    else:
+        # Fetch track info fresh (single track processing)
+        base = ContentBase({**args, "session_id": session_id})
+        track_info = base.get_track_info(track_id)
+        if not track_info:
+            set_progress(session_id, {"message": " Failed to get track info", "percent": 0})
+            print("[ERROR] Failed to get track info")
+            return
+        # Ensure track_id is set correctly
+        track_info["id"] = track_id
 
     args["track_info"] = track_info
 
+    # Get BPM/Key from Tunebat BEFORE download (needed for fuzzy matching)
+    current_bpm = args.get("bpm", 0)
+    current_key = args.get("key", "Unknown")
+    if not current_bpm or current_bpm == 0 or not current_key or current_key == "Unknown":
+        track_title = args.get("track_title") or track_info.get("name", "")
+        track_artist = args.get("track_artist") or track_info.get("artist", "")
+        # Get BPM/Key from Tunebat (uses cache automatically)
+        bpm, key = get_bpm_key(track_title, track_artist, track_id)
+        if bpm and bpm > 0 and key and key != "Unknown":
+            args["bpm"] = bpm
+            args["key"] = key
+            # Update track_info with Tunebat values so they're available for fuzzy matching
+            track_info["tempo"] = bpm
+            track_info["key"] = key
+            args["track_info"] = track_info
+            base.track_info = track_info  # Also update ContentBase's track_info
+        else:
+            # Set defaults if Tunebat failed
+            track_info["tempo"] = 0
+            track_info["key"] = "Unknown"
+            args["track_info"] = track_info
+    else:
+        # Update track_info with provided values
+        track_info["tempo"] = current_bpm
+        track_info["key"] = current_key
+        args["track_info"] = track_info
+        base.track_info = track_info  # Also update ContentBase's track_info
+
     # Download audio
     base.update_progress(" Downloading track audio…", {"track_id": track_id})
-    uid, mp3_path = base.download_audio(track_info["name"], track_info["artist"])
+    
+    # Use track_title/track_artist from args if available (more reliable for playlists)
+    # Otherwise fall back to track_info
+    download_title = args.get("track_title") or track_info.get("name", "")
+    download_artist = args.get("track_artist") or track_info.get("artist", "")
+    
+    # Debug: Log what we're searching for
+    print(f" Searching YouTube for: '{download_artist} - {download_title}'")
+    
+    uid, mp3_path = base.download_audio(download_title, download_artist)
 
     # If download failed/too small, do a single backoff+retry (lets ContentBase rotate clients)
     if (not uid) or (not mp3_path) or (not os.path.exists(mp3_path)) or (not is_sane_audio(mp3_path)):
         backoff = args.get("retry_backoff_sec", (15, 30))
         wait_s = uniform(backoff[0], backoff[1]) if isinstance(backoff, (tuple, list)) and len(backoff) == 2 else float(backoff or 0)
-        print(f"[RETRY] First download failed/too small. Backing off for {wait_s:.1f}s, then retrying…")
+        # Download failed, retrying
         time.sleep(max(0.0, wait_s))
         uid, mp3_path = base.download_audio(track_info["name"], track_info["artist"])
 
@@ -264,6 +329,9 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
 
     args["universal_id"] = uid
     args["mp3_path"] = mp3_path
+    
+    # BPM/Key were already fetched from Tunebat before download (for fuzzy matching)
+    # They're already in args["bpm"], args["key"], and track_info["tempo"], track_info["key"]
 
     # Section 4: Performance Optimization - Fast Mode vs Enhanced Mode
     # Fast Mode (Upload=OFF): Skip preprocessing except loudnorm
@@ -272,7 +340,7 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
     fast_mode = not upload_enabled
     
     if fast_mode:
-        print(f"[FAST MODE] Upload disabled - skipping preprocessing (except loudnorm)")
+        # Fast mode: skipping preprocessing
         # Fast Mode: Only apply loudnorm, skip other preprocessing
         prep_path = _prepared_copy_path(uid)
         try:
@@ -286,22 +354,22 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
             if os.path.exists(prep_path) and os.path.getsize(prep_path) > 150_000:
                 mp3_for_split = prep_path
-                print(f"[FAST MODE] Applied loudnorm only: {prep_path}")
+                # Applied loudnorm
             else:
                 mp3_for_split = mp3_path
-                print(f"[FAST MODE] Loudnorm failed, using original")
+                # Loudnorm failed, using original
         except Exception as e:
-            print(f"[FAST MODE] Loudnorm failed: {e}, using original")
+            # Loudnorm failed, using original
             mp3_for_split = mp3_path
     else:
         # Enhanced Mode: Full preprocessing
         prep_path = _prepared_copy_path(uid)
         if prepare_input_for_demucs(mp3_path, prep_path):
             mp3_for_split = prep_path
-            print(f"[ENHANCED MODE] Using prepared audio at {prep_path}")
+            # Using prepared audio
         else:
             mp3_for_split = mp3_path
-            print(f"[ENHANCED MODE] Using original audio (prep failed or skipped)")
+            # Using original audio
 
     # If cached validated stems exist (original or __prep basename), reuse first valid.
     cached_dir = None
@@ -323,7 +391,7 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
     if cached_dir:
         args["stem_base_path"] = os.path.abspath(cached_dir)  # <- absolute
         set_progress(session_id, {"message": f" Using cached stems ({cached_model})", "percent": 45})
-        print(f"[CACHE] Using cached stems at {args['stem_base_path']} (model={cached_model})")
+        # Using cached stems
     else:
         # Run Demucs with fallbacks and validate
         set_progress(session_id, {"message": " Separating stems…", "percent": 12})
@@ -337,7 +405,7 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
 
         args["stem_base_path"] = os.path.abspath(stem_base_path)  # <- absolute
         set_progress(session_id, {"message": f" Separation complete with {model_used}", "percent": 45})
-        print(f"[OK] Separation complete with {model_used} at {args['stem_base_path']}")
+        # Separation complete
 
     # Progress metas
     progress = get_progress(session_id)
@@ -351,15 +419,15 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
 
     # Pin the stem path per track (single frozen absolute path)
     fixed_sbp = os.path.abspath(args.get("stem_base_path", ""))
-    print(f"[TRACK] Fixed stem_base_path={fixed_sbp} | exists={os.path.isdir(fixed_sbp)} | CWD={os.getcwd()}")
+    # Fixed stem_base_path
 
-    # Process each selected channel; on failure, print and continue
+    # PHASE 1: Process all channels - create all MP4s first (batch processing)
+    # This is faster: all videos are created before any uploads start
+    processors = []
     for idx, channel_ui in enumerate(selected_channels):
-        print(f"[CHANNEL_LOOP] Processing channel {idx+1}/{len(selected_channels)}: {channel_ui}")
         channel_key = UI_TO_CHANNEL_MAP.get(channel_ui, channel_ui)
-        print(f"[CHANNEL_LOOP] Mapped {channel_ui} -> {channel_key}")
         if channel_key not in CHANNEL_MODULE_MAP:
-            print(f"[WARN] Unknown channel key: {channel_key} (from UI: {channel_ui}) — skipping")
+            # Unknown channel, skipping
             continue
 
         # Use pinned path; attempt recovery if missing
@@ -367,7 +435,7 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
         if not os.path.isdir(sbp):
             rec = recover_stem_dir(args.get("universal_id", ""))
             if rec:
-                print(f"[RECOVER] Recovered stem_base_path → {rec}")
+                # Recovered stem path
                 sbp = rec
                 fixed_sbp = rec  # keep consistent for later channels
             else:
@@ -380,7 +448,7 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
             meta = progress.get("meta", {}) if progress else {}
             if progress:
                 channel_display = CHANNEL_NAME_MAP.get(channel_key, channel_key)
-                progress["message"] = f" Uploading {channel_display}…"
+                progress["message"] = f" Processing {channel_display}…"
                 meta["channel"] = channel_display
                 progress["meta"] = meta
                 set_progress(session_id, progress)
@@ -392,9 +460,11 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
             # IMPORTANT: pass the pinned/recovered path explicitly
             processor = processor_class({**args, "channel": channel_key, "session_id": session_id, "stem_base_path": sbp})
 
-            print(f"[CHANNEL] ▶ Processing {channel_key}… | stem_base_path={sbp}")
+            # Process all stems for this channel (create MP4s, but don't upload yet)
             processor.download(track_id)
-            print(f"[CHANNEL] ◀ {channel_key} done")
+            
+            # Store processor for batch upload later
+            processors.append((processor, channel_key))
 
             # Step done
             progress = get_progress(session_id) or {}
@@ -405,7 +475,7 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
             total = int(meta.get("total", 1))
             progress["meta"] = meta
             progress["percent"] = 46 + int((meta["completed"] / total) * 54)
-            progress["message"] = f" {channel_display} done"
+            progress["message"] = f" {channel_display} processed"
             set_progress(session_id, progress)
 
         except Exception as e:
@@ -419,6 +489,29 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
             progress["message"] = f" Error processing {channel_key.upper()} — continuing"
             set_progress(session_id, progress)
             continue
+    
+    # PHASE 2: Batch upload all channels to YouTube (after all MP4s are created)
+    # This is faster: all videos ready, then upload all at once
+    if args.get("yt", False) and processors:
+        set_progress(session_id, {"message": " Uploading all channels to YouTube…", "percent": 90})
+        for processor, channel_key in processors:
+            try:
+                if hasattr(processor, 'video_paths') and processor.video_paths:
+                    channel_display = CHANNEL_NAME_MAP.get(channel_key, channel_key)
+                    set_progress(session_id, {"message": f" Uploading {channel_display} to YouTube…", "percent": 90})
+                    processor.upload_batch_to_youtube(track_info)
+            except Exception as e:
+                print(f"[ERROR] Upload error for {channel_key}: {e}")
+                continue
+        
+        if args.get("tiktok", False):
+            for processor, channel_key in processors:
+                try:
+                    if hasattr(processor, 'video_paths') and processor.video_paths:
+                        processor.upload_batch_to_tiktok(track_info)
+                except Exception as e:
+                    print(f"[ERROR] TikTok upload error for {channel_key}: {e}")
+                    continue
 
     # Optional cooldown after a whole track finishes (to reduce burstiness in big batches)
     cooldown = args.get("per_track_cooldown_sec", 0)
@@ -433,7 +526,7 @@ def dispatch_stem_processing(track_id: str, selected_channels: list, args: dict,
     final["percent"] = 100
     final["done"] = True
     set_progress(session_id, final)
-    print("[DONE] All processing complete")
+    # All processing complete
 
 # --------------------------------------------------------------------------------------
 # Batch runner
@@ -455,7 +548,7 @@ def process_all_tracks(
       - set args['start_jitter_sec']=(0.5, 2.0)
       - set args['per_track_cooldown_sec']=(20, 45) for large batches
     """
-    print(f"[BATCH] process_all_tracks called with selected_channels: {selected_channels}")
+    # Processing tracks
     semaphore = threading.Semaphore(max_concurrent)
 
     def run_with_semaphore(track_id, sess_id):
@@ -472,6 +565,16 @@ def process_all_tracks(
 
     workers = max(1, min(len(track_ids) or 1, max_concurrent))
     with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = []
         for track_id in track_ids:
             full_session_id = f"{session_id}__{track_id}"
-            executor.submit(run_with_semaphore, track_id, full_session_id)
+            future = executor.submit(run_with_semaphore, track_id, full_session_id)
+            futures.append(future)
+        
+        # Wait for all tasks to complete
+        for future in futures:
+            try:
+                future.result()  # Wait for completion and raise any exceptions
+            except Exception as e:
+                # Error already logged in run_with_semaphore
+                pass
