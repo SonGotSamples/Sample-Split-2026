@@ -339,16 +339,16 @@ class Content_download_main(ContentBase):
                             branded_clip = iconed
 
             final_video = branded_clip.with_audio(audio_clip)
-            # For static images, use low FPS (2) to dramatically speed up rendering
-            # Since nothing moves, 2 fps is fine and reduces frame processing by 12x vs 24fps
+            # For static images, use extremely low FPS (0.001) to dramatically speed up rendering
+            # Since nothing moves, 0.001 fps is fine and reduces frame processing by 24,000x vs 24fps
             if not hasattr(final_video, 'fps') or final_video.fps is None:
-                final_video = final_video.with_fps(2)  # 2 fps for static images (12x faster than 24fps)
+                final_video = final_video.with_fps(0.001)  # 0.001 fps for static images (extremely fast)
             print(f"   Writing MP4 (static image, optimized for speed)...")
             final_video.write_videofile(
                 out_path, 
                 codec="libx264", 
                 audio_codec="aac", 
-                fps=2,  # Low FPS for static images (12x fewer frames to process)
+                fps=0.001,  # Extremely low FPS for static images (24,000x fewer frames to process)
                 preset="ultrafast",  # Fastest encoding preset
                 threads=4,  # Use multiple threads
                 logger=None  # Disable verbose logging for speed
