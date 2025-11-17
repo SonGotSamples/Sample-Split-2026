@@ -314,22 +314,20 @@ class ContentBase:
                 except Exception:
                     pass
         
-        # Multi-stage search with priority order
+        # Multi-stage search with priority order - focus on artist and topic videos
         # Clean artist and title for search (remove special characters that might break search)
         clean_artist = artist.replace("$", "").replace("$$", "").strip()
         clean_title = title.replace("$", "").replace("$$", "").strip()
         
+        # Prioritize topic videos (official audio) - search by artist first, then add title
+        # Topic videos are usually official and have consistent naming
         search_terms = [
-            f"{title} - {artist} topic",
-            f"{clean_title} - {clean_artist} topic",
-            f"{title} - {artist} official audio",
-            f"{clean_title} - {clean_artist} official audio",
-            f"{title} - {artist} album",
-            f"{clean_title} - {clean_artist} album",
-            f"{title} - {artist}",
-            f"{clean_title} - {clean_artist}",
-            f"{artist} {title}",  # Alternative format
-            f"{clean_artist} {clean_title}",  # Alternative format without special chars
+            f"{artist} {title} topic",  # Artist first, then title, then topic
+            f"{clean_artist} {clean_title} topic",
+            f"{title} {artist} topic",  # Title first variant
+            f"{clean_title} {clean_artist} topic",
+            f"{artist} topic {title}",  # Artist topic title variant
+            f"{clean_artist} topic {clean_title}",
         ]
         
         # Reject patterns (music videos, live, unofficial)
@@ -389,14 +387,21 @@ class ContentBase:
                     if should_reject:
                         continue
                     
-                    # Prioritize Topic/Official Audio/Album sources
+                    # Prioritize Topic videos (highest priority - these are official audio)
+                    # Topic videos are the most reliable source
                     priority = 0
                     if "topic" in video_title:
-                        priority = 3
+                        priority = 10  # Highest priority for topic videos
                     elif "official audio" in video_title or "official" in video_title:
-                        priority = 2
+                        priority = 5  # Medium priority for official audio
                     elif "album" in video_title:
-                        priority = 1
+                        priority = 2  # Lower priority for album
+                    
+                    # Penalize videos that don't match artist well
+                    # Check if artist name appears in title (case-insensitive)
+                    artist_in_title = clean_artist.lower() in video_title
+                    if not artist_in_title:
+                        priority = max(0, priority - 3)  # Reduce priority if artist not in title
                     
                     candidates.append({
                         "id": video_id,
