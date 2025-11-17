@@ -354,22 +354,33 @@ class Content_download_main(ContentBase):
                 Image.fromarray(frame_image).save(tmp_img_path)
             
             try:
-                print(f"   Combining static image with audio using FFmpeg (no frame processing)...")
-                # Use FFmpeg to combine static image with audio - much faster than MoviePy frame processing
+                print(f"   Combining static image with audio using FFmpeg (maximum speed optimizations)...")
+                # Use FFmpeg to combine static image with audio - maximum speed optimizations
                 # -loop 1: loop the image
                 # -shortest: stop when audio ends
                 # -r 1: minimal frame rate (just to satisfy codec, but we only have 1 frame)
                 cmd = [
                     "ffmpeg", "-y",
+                    "-threads", "0",  # Use all available CPU threads
                     "-loop", "1",  # Loop the static image
                     "-i", tmp_img_path,  # Input image
                     "-i", audio_path,  # Input audio
                     "-c:v", "libx264",  # Video codec
+                    "-preset", "ultrafast",  # Fastest encoding preset
                     "-tune", "stillimage",  # Optimize for static images
-                    "-preset", "ultrafast",  # Fastest encoding
+                    "-crf", "28",  # Higher CRF = lower quality but much faster (28 is acceptable for static images)
+                    "-x264opts", "keyint=1:min-keyint=1:scenecut=0:no-mbtree:no-weightb:no-mixed-refs:no-8x8dct:fast-pskip=2",  # Maximum speed options
+                    "-g", "1",  # Minimal keyframes (1 per frame since static)
+                    "-bf", "0",  # No B-frames (faster encoding)
+                    "-refs", "1",  # Minimal reference frames
+                    "-me_method", "zero",  # Fastest motion estimation (none needed for static)
+                    "-subq", "0",  # Fastest subpixel motion estimation
                     "-c:a", "aac",  # Audio codec
-                    "-b:a", "192k",  # Audio bitrate
+                    "-b:a", "128k",  # Lower audio bitrate for faster encoding (still good quality)
+                    "-ar", "44100",  # Standard sample rate
+                    "-ac", "2",  # Stereo
                     "-pix_fmt", "yuv420p",  # Pixel format for compatibility
+                    "-vsync", "0",  # Disable frame rate conversion (faster)
                     "-shortest",  # Stop when audio ends
                     "-r", "1",  # Minimal frame rate (1 fps, but only 1 frame looped)
                     out_path
