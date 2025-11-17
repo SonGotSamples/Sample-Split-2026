@@ -1051,37 +1051,6 @@ def upload_all_stems(
         )
         job_tags = normalize_tags(tags)
 
-        # Auto-generate comment if not provided
-        # Comment template based on stem title and type
-        auto_comment = None
-        if not comment:
-            # Extract stem type from title (e.g., "Acapella", "Drums", etc.)
-            stem_type_match = None
-            for stem_type in ["Acapella", "Drums", "Bass", "Melody", "Instrumental"]:
-                if stem_type in title:
-                    stem_type_match = stem_type
-                    break
-            
-            if stem_type_match:
-                # Generate comment template
-                auto_comment = f"""🎧 New {title} just dropped — like, comment your remix, and subscribe!
-
-Access all stems & extracts:
-
-https://songotsamples.com/collections/monthly-pack
-
-Follow all our channels to keep up with new uploads:
-
-Main: https://www.youtube.com/@songotsamples
-
-Backup: https://www.youtube.com/@Songotsamples2
-
-Acapellas: https://www.youtube.com/@SonGotAcapellas
-
-Drums: https://www.youtube.com/@SonGotDrums
-
-Sample Split: https://www.youtube.com/@samplesplit"""
-        
         job = VideoJob(
             file=f,
             title=title,
@@ -1090,7 +1059,7 @@ Sample Split: https://www.youtube.com/@samplesplit"""
             category_id=category_id,
             playlist=playlist,
             thumbnail=thumb,
-            comment=comment or auto_comment,  # Use provided comment or auto-generated
+            comment=comment,
             privacy_status=privacy,
             publish_at_rfc3339=publish_rfc3339,
             made_for_kids=made_for_kids,
