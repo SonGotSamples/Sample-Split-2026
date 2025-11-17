@@ -339,8 +339,11 @@ class Content_download_main(ContentBase):
                             branded_clip = iconed
 
             final_video = branded_clip.with_audio(audio_clip)
+            # Set fps if not already set
+            if not hasattr(final_video, 'fps') or final_video.fps is None:
+                final_video = final_video.with_fps(24)
             print(f"   Writing MP4...")
-            final_video.write_videofile(out_path, codec="libx264", audio_codec="aac")
+            final_video.write_videofile(out_path, codec="libx264", audio_codec="aac", fps=24)
             print(f" ✓ Video rendered: {out_path}")
             return out_path
         except Exception as exc:

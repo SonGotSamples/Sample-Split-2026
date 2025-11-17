@@ -238,9 +238,8 @@ def add_watermark(clip, channel: str, duration: float, watermark_clip: Optional[
         # Adjust duration if needed
         if watermark_clip.duration != duration:
             watermark_clip = watermark_clip.with_duration(duration)
-        # Adjust position if clip size changed
-        if watermark_clip.pos[1] != (clip.h - watermark_clip.h - 20):
-            watermark_clip = watermark_clip.with_position((20, clip.h - watermark_clip.h - 20))
+        # Set position (always set to ensure it's correct)
+        watermark_clip = watermark_clip.with_position((20, clip.h - watermark_clip.h - 20))
         
         return CompositeVideoClip([clip, watermark_clip])
     except Exception as e:
@@ -314,9 +313,8 @@ def add_stem_icon(clip, stem_type: str, duration: float, icon_clip: Optional["Im
         # Adjust duration if needed
         if icon_clip.duration != duration:
             icon_clip = icon_clip.with_duration(duration)
-        # Adjust position if clip size changed
-        if icon_clip.pos[0] != (clip.w - icon_clip.w - 20):
-            icon_clip = icon_clip.with_position((clip.w - icon_clip.w - 20, 20))
+        # Set position (always set to ensure it's correct)
+        icon_clip = icon_clip.with_position((clip.w - icon_clip.w - 20, 20))
         
         return CompositeVideoClip([clip, icon_clip])
     except Exception as e:
