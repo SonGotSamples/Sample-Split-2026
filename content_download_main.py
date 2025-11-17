@@ -35,7 +35,7 @@ from mutagen.id3 import COMM, ID3, TIT2
 from mutagen.mp3 import MP3
 from pydub import AudioSegment
 
-from branding_utils import add_intro_card, apply_moviepy_resize
+from branding_utils import add_intro_card, apply_moviepy_resize, create_base_clip
 from content_base import (
     ContentBase,
     DEFAULT_DESCRIPTION,
@@ -108,6 +108,12 @@ class Content_download_main(ContentBase):
         self.trim_track = args.get("trim_track", False)
         self.trim_length = args.get("trim_length", 72)
         self.thumbnail_map: Dict[str, str] = {}
+        # Cache for video clips (reuse across stems for same track)
+        self._cached_background: Optional[Any] = None
+        self._cached_thumbnail_clip: Optional[Any] = None
+        self._cached_base_clip: Optional[Any] = None
+        self._cached_duration: Optional[float] = None
+        self._cached_thumb_path: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Progress helpers (same structure as other processors)
@@ -235,9 +241,25 @@ class Content_download_main(ContentBase):
             audio_clip = AudioFileClip(audio_path)
             print(f"   Duration: {audio_clip.duration}s")
             
+            # Cache base clip (background + thumbnail) for reuse across stems
+            # Only recreate if duration or thumbnail path changed
+            duration = audio_clip.duration
+            if (self._cached_base_clip is None or 
+                self._cached_duration != duration or 
+                self._cached_thumb_path != thumb_path):
+                print(f"   Creating base clip (background + thumbnail)...")
+                self._cached_base_clip = create_base_clip(duration, thumb_path)
+                self._cached_duration = duration
+                self._cached_thumb_path = thumb_path
+            else:
+                print(f"   Reusing cached base clip (background + thumbnail)")
+                # Adjust duration if needed (should be same for all stems of same track)
+                if self._cached_base_clip.duration != duration:
+                    self._cached_base_clip = self._cached_base_clip.with_duration(duration)
+            
             # Section 2: Enhanced branding with watermark and stem icon
-            # add_intro_card already includes: background, thumbnail, watermark, and stem icon
-            branded_clip = add_intro_card(audio_clip.duration, channel, thumb_path, stem_type)
+            # Pass cached base clip to avoid recreating background + thumbnail
+            branded_clip = add_intro_card(duration, channel, thumb_path, stem_type, base_clip=self._cached_base_clip)
             
             if not branded_clip:
                 # Fallback: create basic clip if add_intro_card fails

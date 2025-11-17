@@ -245,19 +245,17 @@ def add_stem_icon(clip, stem_type: str, duration: float) -> Optional["CompositeV
         print(f"Warning: Could not add stem icon: {e}")
         return None
 
-def add_intro_card(duration: float, channel: str, thumb_path: Optional[str] = None, stem_type: str = "") -> Optional[Union["CompositeVideoClip", "ColorClip"]]:
+def create_base_clip(duration: float, thumb_path: Optional[str] = None) -> Optional[Union["CompositeVideoClip", "ColorClip"]]:
     """
-    Create an intro card for videos with branding.
-    Section 2: Includes watermark and stem icon.
+    Create base clip (background + thumbnail) that can be cached and reused.
+    This is the same for all stems of the same track.
     
     Args:
         duration: Duration of the video in seconds
-        channel: Channel name
         thumb_path: Optional path to thumbnail image
-        stem_type: Type of stem (e.g., "Acapella", "Drums")
         
     Returns:
-        MoviePy clip with intro card, watermark, and stem icon, or None if moviepy unavailable
+        Base clip with background and thumbnail, or None if moviepy unavailable
     """
     if not MOVIEPY_AVAILABLE:
         return None
@@ -280,10 +278,41 @@ def add_intro_card(duration: float, channel: str, thumb_path: Optional[str] = No
                 thumb_clip = thumb_clip.with_position("center")
                 clips.append(thumb_clip)
             except Exception as e:
-                print(f"Warning: Could not add thumbnail to intro card: {e}")
+                print(f"Warning: Could not add thumbnail to base clip: {e}")
         
         # Composite base clip
         base_clip = CompositeVideoClip(clips, size=(1280, 720))
+        return base_clip
+        
+    except Exception as e:
+        print(f"Warning: Could not create base clip: {e}")
+        return None
+
+
+def add_intro_card(duration: float, channel: str, thumb_path: Optional[str] = None, stem_type: str = "", base_clip: Optional[Union["CompositeVideoClip", "ColorClip"]] = None) -> Optional[Union["CompositeVideoClip", "ColorClip"]]:
+    """
+    Create an intro card for videos with branding.
+    Section 2: Includes watermark and stem icon.
+    
+    Args:
+        duration: Duration of the video in seconds
+        channel: Channel name
+        thumb_path: Optional path to thumbnail image (used if base_clip not provided)
+        stem_type: Type of stem (e.g., "Acapella", "Drums")
+        base_clip: Optional cached base clip (background + thumbnail) to reuse
+        
+    Returns:
+        MoviePy clip with intro card, watermark, and stem icon, or None if moviepy unavailable
+    """
+    if not MOVIEPY_AVAILABLE:
+        return None
+    
+    try:
+        # Use cached base clip if provided, otherwise create new one
+        if base_clip is None:
+            base_clip = create_base_clip(duration, thumb_path)
+            if base_clip is None:
+                return None
         
         # Section 2: Add watermark (on ALL channels)
         watermarked = add_watermark(base_clip, channel, duration)
