@@ -19,62 +19,61 @@ except ImportError:
     MOVIEPY_AVAILABLE = False
     ColorClip = CompositeVideoClip = ImageClip = TextClip = None
 
-# Section 2: Branding asset paths (using existing assets structure)
+# Section 2: Branding asset paths (files directly in assets/ directory)
 BRANDING_ASSETS_DIR = Path("assets")
-ICONS_DIR = BRANDING_ASSETS_DIR / "assets" / "icons"
-LABELS_DIR = BRANDING_ASSETS_DIR / "assets" / "label"
 
 # Watermark/label paths - map channels to label files
-# Updated to use correct watermarks for each channel:
-# - Main channel: SGS (sgs.png)
-# - Backup channel: SGS 2 (sgs_2.png)
+# Files should be directly in assets/ directory
+# - Main channel: SGS (sgs.png or sgs_watermark.png)
+# - Backup channel: SGS 2 (sgs_2.png or sgs2_watermark.png)
 # - Acapella channel: Son Got Acapellas (son_got_acappellas.png)
 # - Drum channel: Son Got Drums (son_got_drums.png)
 # - Sample Split channel: Sample Split (sample_split.png)
 WATERMARK_PATHS = {
     # Main channel variations - uses SGS watermark
-    "main": LABELS_DIR / "sgs.png",
-    "main_channel": LABELS_DIR / "sgs.png",
-    "mainchannel": LABELS_DIR / "sgs.png",
+    "main": BRANDING_ASSETS_DIR / "sgs_watermark.png",
+    "main_channel": BRANDING_ASSETS_DIR / "sgs_watermark.png",
+    "mainchannel": BRANDING_ASSETS_DIR / "sgs_watermark.png",
     
     # Backup/SGS2 channel - uses SGS 2 watermark
-    "back up": LABELS_DIR / "sgs_2.png",
-    "backup": LABELS_DIR / "sgs_2.png",
-    "sgs_2": LABELS_DIR / "sgs_2.png",
-    "sgs2": LABELS_DIR / "sgs_2.png",
+    "back up": BRANDING_ASSETS_DIR / "sgs2_watermark.png",
+    "backup": BRANDING_ASSETS_DIR / "sgs2_watermark.png",
+    "sgs_2": BRANDING_ASSETS_DIR / "sgs2_watermark.png",
+    "sgs2": BRANDING_ASSETS_DIR / "sgs2_watermark.png",
     
     # Drums channel - uses Son Got Drums watermark
-    "drum": LABELS_DIR / "son_got_drums.png",
-    "drums": LABELS_DIR / "son_got_drums.png",
-    "son_got_drums": LABELS_DIR / "son_got_drums.png",
-    "songotdrums": LABELS_DIR / "son_got_drums.png",
+    "drum": BRANDING_ASSETS_DIR / "son_got_drums.png",
+    "drums": BRANDING_ASSETS_DIR / "son_got_drums.png",
+    "son_got_drums": BRANDING_ASSETS_DIR / "son_got_drums.png",
+    "songotdrums": BRANDING_ASSETS_DIR / "son_got_drums.png",
     
     # Vocal/Acapella channel - uses Son Got Acapellas watermark
-    "vocal": LABELS_DIR / "son_got_acappellas.png",
-    "vocals": LABELS_DIR / "son_got_acappellas.png",
-    "son_got_acapellas": LABELS_DIR / "son_got_acappellas.png",
-    "son_got_acappellas": LABELS_DIR / "son_got_acappellas.png",
-    "songotacapellas": LABELS_DIR / "son_got_acappellas.png",
+    "vocal": BRANDING_ASSETS_DIR / "son_got_acappellas.png",
+    "vocals": BRANDING_ASSETS_DIR / "son_got_acappellas.png",
+    "son_got_acapellas": BRANDING_ASSETS_DIR / "son_got_acappellas.png",
+    "son_got_acappellas": BRANDING_ASSETS_DIR / "son_got_acappellas.png",
+    "songotacapellas": BRANDING_ASSETS_DIR / "son_got_acappellas.png",
     
     # Sample Split channel - uses Sample Split watermark
-    "sample split": LABELS_DIR / "sample_split.png",
-    "sample_split": LABELS_DIR / "sample_split.png",
-    "samplesplit": LABELS_DIR / "sample_split.png",
+    "sample split": BRANDING_ASSETS_DIR / "sample_split.png",
+    "sample_split": BRANDING_ASSETS_DIR / "sample_split.png",
+    "samplesplit": BRANDING_ASSETS_DIR / "sample_split.png",
     
     # TikTok channel - uses TikTok watermark
-    "tiktok": LABELS_DIR / "tik_tok.png",
-    "tiktok_channel": LABELS_DIR / "tik_tok.png",
-    "tik tok": LABELS_DIR / "tik_tok.png",
-    "tiktokchannel": LABELS_DIR / "tik_tok.png",
+    "tiktok": BRANDING_ASSETS_DIR / "tik_tok.png",
+    "tiktok_channel": BRANDING_ASSETS_DIR / "tik_tok.png",
+    "tik tok": BRANDING_ASSETS_DIR / "tik_tok.png",
+    "tiktokchannel": BRANDING_ASSETS_DIR / "tik_tok.png",
 }
 
 # Stem icon paths - map stem types to icon files
+# Files should be directly in assets/ directory as icon_*.png
 STEM_ICONS = {
-    "acapella": ICONS_DIR / "acapella.png",
-    "drums": ICONS_DIR / "drums.png",
-    "bass": ICONS_DIR / "bass.png",
-    "melody": ICONS_DIR / "melody.png",
-    "instrumental": ICONS_DIR / "instrumental.png",
+    "acapella": BRANDING_ASSETS_DIR / "icon_acapella.png",
+    "drums": BRANDING_ASSETS_DIR / "icon_drums.png",
+    "bass": BRANDING_ASSETS_DIR / "icon_bass.png",
+    "melody": BRANDING_ASSETS_DIR / "icon_melody.png",
+    "instrumental": BRANDING_ASSETS_DIR / "icon_instrumental.png",
 }
 
 
@@ -113,8 +112,8 @@ def apply_moviepy_resize(clip, new_size=None, *args, **kwargs):
 def _get_watermark_path(channel: str) -> Optional[Path]:
     """
     Section 2: Get watermark/label path based on channel.
-    Maps channel names to label files in assets/assets/label/
-    Main channel uses sgs_2.png (Section 2: reuse SGS2 asset, remove '2' and replace with 'SGS').
+    Maps channel names to label files in assets/ directory.
+    Main channel uses sgs_watermark.png (Section 2: reuse SGS2 asset, remove '2' and replace with 'SGS').
     """
     channel_lower = channel.lower().strip()
     
@@ -130,13 +129,21 @@ def _get_watermark_path(channel: str) -> Optional[Path]:
             if path.exists():
                 return path
     
-    # Fallback: try common patterns
+    # Fallback: try common patterns for Main channel
     if "main" in channel_lower:
-        fallback = LABELS_DIR / "sgs.png"
+        # Try sgs_watermark.png first
+        fallback = BRANDING_ASSETS_DIR / "sgs_watermark.png"
         if fallback.exists():
             return fallback
-        # If sgs.png doesn't exist, try sgs_2.png as backup
-        fallback = LABELS_DIR / "sgs_2.png"
+        # If sgs_watermark.png doesn't exist, try sgs2_watermark.png as backup
+        fallback = BRANDING_ASSETS_DIR / "sgs2_watermark.png"
+        if fallback.exists():
+            return fallback
+        # Also try legacy names
+        fallback = BRANDING_ASSETS_DIR / "sgs.png"
+        if fallback.exists():
+            return fallback
+        fallback = BRANDING_ASSETS_DIR / "sgs_2.png"
         if fallback.exists():
             return fallback
     
