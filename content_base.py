@@ -370,7 +370,19 @@ class ContentBase:
                     if not video:
                         continue
                     video_title = video.get("title", "").lower()
+                    # Extract video ID - yt-dlp can return it in different formats
                     video_id = video.get("id")
+                    if not video_id:
+                        # Try extracting from URL if ID not directly available
+                        url = video.get("url", "")
+                        if url and "watch?v=" in url:
+                            video_id = url.split("watch?v=")[1].split("&")[0]
+                        elif url:
+                            # Extract from short URL format
+                            video_id = url.split("/")[-1].split("?")[0]
+                    
+                    if not video_id:
+                        continue
                     
                     # Reject if matches reject patterns
                     should_reject = any(pattern in video_title for pattern in reject_patterns)
