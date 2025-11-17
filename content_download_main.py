@@ -369,12 +369,10 @@ class Content_download_main(ContentBase):
                     "-preset", "ultrafast",  # Fastest encoding preset
                     "-tune", "stillimage",  # Optimize for static images
                     "-crf", "28",  # Higher CRF = lower quality but much faster (28 is acceptable for static images)
-                    "-x264opts", "keyint=1:min-keyint=1:scenecut=0:no-mbtree:no-weightb:no-mixed-refs:no-8x8dct:fast-pskip=2",  # Maximum speed options
+                    "-x264opts", "keyint=1:min-keyint=1:scenecut=0:no-mbtree:no-weightb:no-mixed-refs:no-8x8dct:fast-pskip=2:me=dia:subme=0",  # Maximum speed options (me=dia and subme=0 are fastest)
                     "-g", "1",  # Minimal keyframes (1 per frame since static)
                     "-bf", "0",  # No B-frames (faster encoding)
                     "-refs", "1",  # Minimal reference frames
-                    "-me_method", "zero",  # Fastest motion estimation (none needed for static)
-                    "-subq", "0",  # Fastest subpixel motion estimation
                     "-c:a", "aac",  # Audio codec
                     "-b:a", "128k",  # Lower audio bitrate for faster encoding (still good quality)
                     "-ar", "44100",  # Standard sample rate
@@ -385,7 +383,11 @@ class Content_download_main(ContentBase):
                     "-r", "1",  # Minimal frame rate (1 fps, but only 1 frame looped)
                     out_path
                 ]
-                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+                # Capture stderr to help debug if it fails
+                result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"   FFmpeg error: {result.stderr[:500]}")  # Print first 500 chars of error
+                    raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
                 print(f" ✓ Video rendered: {out_path}")
                 return out_path
             finally:
